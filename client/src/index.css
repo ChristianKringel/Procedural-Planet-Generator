@@ -1,0 +1,221 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500,650,750&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =========================================================
+   Aesthetic: clean minimal dark mode professional — premium
+   - Deep ink background with cool-cyan primary accent
+   - Subtle grain + bloom highlights
+   - Crisp typography: Fraunces (display) + IBM Plex Sans (body)
+========================================================= */
+
+:root {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, Segoe UI,
+    Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  --font-display: "Fraunces", serif;
+
+  /* Space-separated HSL */
+  --background: 228 26% 8%;
+  --foreground: 210 25% 96%;
+
+  --card: 228 24% 10%;
+  --card-foreground: 210 25% 96%;
+  --card-border: 225 22% 18%;
+
+  --popover: 228 24% 10%;
+  --popover-foreground: 210 25% 96%;
+  --popover-border: 225 22% 18%;
+
+  --border: 225 22% 18%;
+  --input: 225 22% 22%;
+  --ring: 188 92% 54%;
+
+  --muted: 228 20% 14%;
+  --muted-foreground: 215 16% 70%;
+
+  --primary: 188 92% 54%;
+  --primary-foreground: 228 26% 8%;
+
+  --secondary: 232 16% 16%;
+  --secondary-foreground: 210 25% 96%;
+
+  --accent: 266 90% 68%;
+  --accent-foreground: 228 26% 8%;
+
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 210 25% 96%;
+
+  --chart-1: 188 92% 54%;
+  --chart-2: 266 90% 68%;
+  --chart-3: 28 92% 58%;
+  --chart-4: 142 70% 45%;
+  --chart-5: 210 90% 60%;
+
+  --sidebar: 228 24% 9%;
+  --sidebar-foreground: 210 25% 94%;
+  --sidebar-border: 225 22% 18%;
+  --sidebar-primary: 188 92% 54%;
+  --sidebar-primary-foreground: 228 26% 8%;
+  --sidebar-accent: 232 18% 14%;
+  --sidebar-accent-foreground: 210 25% 94%;
+  --sidebar-ring: 188 92% 54%;
+
+  --radius: 0.95rem;
+
+  /* Shadows tuned for dark */
+  --shadow-2xs: 0 1px 0 hsl(0 0% 100% / 0.04);
+  --shadow-xs: 0 1px 0 hsl(0 0% 100% / 0.05), 0 8px 18px hsl(0 0% 0% / 0.2);
+  --shadow-sm: 0 1px 0 hsl(0 0% 100% / 0.06), 0 12px 28px hsl(0 0% 0% / 0.28);
+  --shadow-md: 0 1px 0 hsl(0 0% 100% / 0.08), 0 18px 48px hsl(0 0% 0% / 0.35);
+  --shadow-lg: 0 1px 0 hsl(0 0% 100% / 0.1), 0 28px 70px hsl(0 0% 0% / 0.45);
+
+  --gridline: 225 22% 16%;
+}
+
+.dark {
+  /* Keep same (app is dark-first) */
+  --background: 228 26% 8%;
+  --foreground: 210 25% 96%;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+    text-rendering: geometricPrecision;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-display);
+    @apply font-bold tracking-tight;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.25);
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  .glass {
+    background: linear-gradient(
+      180deg,
+      hsl(var(--card) / 0.7),
+      hsl(var(--card) / 0.42)
+    );
+    border: 1px solid hsl(var(--card-border) / 0.7);
+    box-shadow: var(--shadow-md);
+    backdrop-filter: blur(10px);
+  }
+
+  .noise-overlay {
+    position: relative;
+  }
+  .noise-overlay::before {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    opacity: 0.07;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='260' height='260' filter='url(%23n)' opacity='.35'/%3E%3C/svg%3E");
+    border-radius: inherit;
+  }
+
+  .mesh-bg {
+    background-image:
+      radial-gradient(900px 600px at 20% 15%, hsl(var(--primary) / 0.12), transparent 60%),
+      radial-gradient(900px 700px at 80% 20%, hsl(var(--accent) / 0.10), transparent 65%),
+      radial-gradient(700px 700px at 55% 110%, hsl(28 92% 58% / 0.08), transparent 55%),
+      linear-gradient(180deg, hsl(var(--background)), hsl(228 26% 7%));
+  }
+
+  .hairline {
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(var(--border) / 0.9),
+      transparent
+    );
+    height: 1px;
+  }
+
+  .focus-ring {
+    @apply focus:outline-none focus-visible:ring-4 focus-visible:ring-ring/20;
+  }
+
+  .shine {
+    position: relative;
+    overflow: hidden;
+  }
+  .shine::after {
+    content: "";
+    position: absolute;
+    inset: -120% -40%;
+    transform: rotate(20deg);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(var(--primary) / 0.18),
+      transparent
+    );
+    opacity: 0;
+    transition: opacity 220ms ease, transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .shine:hover::after {
+    opacity: 1;
+    transform: rotate(20deg) translateX(25%);
+  }
+
+  @keyframes float-in {
+    from {
+      opacity: 0;
+      transform: translateY(10px) scale(0.98);
+      filter: blur(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      filter: blur(0);
+    }
+  }
+
+  @keyframes pulse-soft {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  .animate-float-in {
+    animation: float-in 700ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+
+  .animate-pulse-soft {
+    animation: pulse-soft 1.4s ease-in-out infinite;
+  }
+}
