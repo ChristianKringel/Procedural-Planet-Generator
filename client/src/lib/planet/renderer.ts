@@ -521,6 +521,7 @@ export class PlanetRenderer {
 
   private cameraDist = 3.15;
   private autoRotate = true;
+  private objectDrawLogged = false;
 
   private shadowVP: Mat4 = mat4Identity();
   private view: Mat4 = mat4Identity();
@@ -548,8 +549,6 @@ export class PlanetRenderer {
 
     this.shadow = createShadowTarget(gl, 2048);
 
-    this.initRenderer();
-
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
@@ -557,7 +556,12 @@ export class PlanetRenderer {
     this.resize();
     this.loop = this.loop.bind(this);
     this.setupEventListeners();
-    this.raf = requestAnimationFrame(this.loop);
+    
+    // Initialize asynchronously then start loop
+    this.initRenderer().then(() => {
+      console.log("✓ Renderer initialized, starting render loop");
+      this.raf = requestAnimationFrame(this.loop);
+    });
   }
 
   private setupEventListeners() {
@@ -571,30 +575,49 @@ export class PlanetRenderer {
   }
 
   private async initRenderer() {
-    await this.loadModels();
+    console.log("🚀 Starting renderer initialization...");
+    const modelsLoaded = await this.loadModels();
+    if (!modelsLoaded) {
+      console.error("❌ Failed to load models, objects will not render");
+    }
     this.initObjects();
     this.rebuildPlanet();
     this.redistributeObjects();
+    console.log("✅ Renderer initialization complete");
   }
 
-  private async loadModels() {
+  private async loadModels(): Promise<boolean> {
     try {
+      console.log("📦 Fetching models...");
       const [treeRes, boatRes] = await Promise.all([
         fetch("/models/tree.obj"),
         fetch("/models/boat.obj")
       ]);
+      
+      if (!treeRes.ok || !boatRes.ok) {
+        console.error("❌ Failed to fetch models:", {
+          tree: treeRes.status,
+          boat: boatRes.status
+        });
+        return false;
+      }
+      
       const [treeText, boatText] = await Promise.all([
         treeRes.text(),
         boatRes.text()
       ]);
+      
       this.treeModel = parseObj(treeText);
       this.boatModel = parseObj(boatText);
-      console.log("✓ Models loaded:", {
+      
+      console.log("✅ Models loaded:", {
         tree: `${this.treeModel.positions.length / 3} verts, ${this.treeModel.indices.length / 3} tris`,
         boat: `${this.boatModel.positions.length / 3} verts, ${this.boatModel.indices.length / 3} tris`
       });
+      return true;
     } catch (e) {
-      console.error("Failed to load models:", e);
+      console.error("❌ Exception loading models:", e);
+      return false;
     }
   }
 
@@ -660,11 +683,19 @@ export class PlanetRenderer {
   private initObjects() {
     const gl = this.gl;
     if (!this.treeModel || !this.boatModel) {
-      console.warn("⚠️ Cannot init objects: models not loaded");
+      console.warn("⚠️ Cannot init objects: models not loaded", {
+        treeModel: !!this.treeModel,
+        boatModel: !!this.boatModel
+      });
       return;
     }
 
-    console.log("🔧 Initializing object VAOs...");
+    console.log("🔧 Initializing object VAOs...", {
+      treeVerts: this.treeModel.positions.length / 3,
+      treeTris: this.treeModel.indices.length / 3,
+      boatVerts: this.boatModel.positions.length / 3,
+      boatTris: this.boatModel.indices.length / 3
+    });
 
     // tree
     {
@@ -797,6 +828,10 @@ export class PlanetRenderer {
     }
 
     this.placed = out;
+    console.log(`✓ Redistributed ${out.length} objects:`, {
+      trees: out.filter(o => o.kind === 'tree').length,
+      boats: out.filter(o => o.kind === 'boat').length
+    });
   }
 
   pick(clientX: number, clientY: number): PickResult {
@@ -812,8 +847,8 @@ export class PlanetRenderer {
 
     const dirView: Vec3 = normalize([x * aspect * tan, y * tan, -1]);
 
-    // Camera at (0,0,dist) rotated around Y by this.rot
-    const camPos: Vec3 = [Math.sin(this.rot) * this.cameraDist, 0.35, Math.cos(this.rot) * this.cameraDist];
+    // Camera at (0,0,dist) rotated around Y by this.cameraRot
+    const camPos: Vec3 = [Math.sin(this.cameraRot) * this.cameraDist, 0.35, Math.cos(this.cameraRot) * this.cameraDist];
     const center: Vec3 = [0, 0, 0];
     const up: Vec3 = [0, 1, 0];
     // Derive camera basis
@@ -994,43 +1029,37 @@ export class PlanetRenderer {
     gl.uniform1i(gl.getUniformLocation(this.objProg, "u_shadowsEnabled"), this.settings.shadowsEnabled ? 1 : 0);
 
     let drawnCount = 0;
-    let loggedOnce = false;
     const drawObj = (o: PlacedObject) => {
       drawnCount++;
-      if (!loggedOnce && drawnCount === 1) {
-        loggedOnce = true;
+      if (!this.objectDrawLogged && drawnCount === 1) {
+        this.objectDrawLogged = true;
         console.log("🖌️ Drawing objects. First:", {
           kind: o.kind,
           scale: o.scale,
           position: o.position,
-          posLength: len(o.position as Vec3)
+          posLength: len(o.position as Vec3),
+          hasTreeVao: !!this.treeVao,
+          hasBoatVao: !!this.boatVao
         });
       }
       let pos = o.position as Vec3;
-      let albedo: Vec3 = o.kind === "tree" ? [0.18, 0.58, 0.26] : [0.10, 0.72, 0.78];
+      let albedo: Vec3;
+      let t = o.tangent as Vec3;
+      let b = o.bitangent as Vec3;
 
       if (o.kind === "boat") {
         const bob = Math.sin(timeS * 2.2 + o.phase) * 0.012;
         pos = add(pos, mulScalar(o.normal as Vec3, bob));
         albedo = [0.12, 0.62, 0.78];
       } else {
-        // tiny sway
+        // tree with tiny sway
         const sway = Math.sin(timeS * 1.6 + o.phase) * 0.015;
-        const t = normalize(add(o.tangent as Vec3, mulScalar(o.bitangent as Vec3, sway)));
-        const b = normalize(cross(o.normal as Vec3, t));
-        const world = this.worldFromBasis(pos, o.normal as Vec3, t, b, o.scale);
-        gl.uniformMatrix4fv(gl.getUniformLocation(this.objProg, "u_world"), false, world);
-        gl.uniform3f(gl.getUniformLocation(this.objProg, "u_albedo"), albedo[0], albedo[1], albedo[2]);
-        if (!this.treeVao) {
-          if (drawnCount === 1) console.log("❌ Tree VAO missing!");
-          return;
-        }
-        gl.bindVertexArray(this.treeVao);
-        gl.drawElements(gl.TRIANGLES, this.treeIndexCount, gl.UNSIGNED_INT, 0);
-        return;
+        t = normalize(add(o.tangent as Vec3, mulScalar(o.bitangent as Vec3, sway)));
+        b = normalize(cross(o.normal as Vec3, t));
+        albedo = [0.18, 0.58, 0.26];
       }
 
-      const world = this.worldFromBasis(pos, o.normal as Vec3, o.tangent as Vec3, o.bitangent as Vec3, o.scale);
+      const world = this.worldFromBasis(pos, o.normal as Vec3, t, b, o.scale);
       gl.uniformMatrix4fv(gl.getUniformLocation(this.objProg, "u_world"), false, world);
       gl.uniform3f(gl.getUniformLocation(this.objProg, "u_albedo"), albedo[0], albedo[1], albedo[2]);
 
