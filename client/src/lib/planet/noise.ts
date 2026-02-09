@@ -103,15 +103,10 @@ export function makeNoiseSampler(seedStr: string, type: NoiseType) {
 
   return function sample(nlat: number, nlon: number) {
     // nlat: [-pi/2..pi/2], nlon: [-pi..pi]
-    // Ensure seamless wrapping at longitude boundaries
-    // Map to [0, 1] range with proper wrapping
-    let u = (nlon / (Math.PI * 2)) + 0.5;
+    const u = (nlon / (Math.PI * 2)) + 0.5;
     const v = (nlat / Math.PI) + 0.5;
-    
-    // Normalize u to [0, 1) to ensure continuity
-    u = u - Math.floor(u);
 
-    // Scale for noise sampling
+    // Avoid seam: use 3-sample blend at edges by wrapping u
     const x = u * 6.0;
     const y = v * 3.5;
 

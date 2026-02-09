@@ -43,6 +43,7 @@ function createProgram(gl: GL, vs: string, fs: string) {
   const p = gl.createProgram()!;
   gl.attachShader(p, createShader(gl, gl.VERTEX_SHADER, vs));
   gl.attachShader(p, createShader(gl, gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(p, 0, "a_position");
   gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
     const log = gl.getProgramInfoLog(p);
@@ -160,7 +161,7 @@ float sampleShadow(vec4 lightClip) {
 
   float shadow = 0.0;
   vec2 texel = 1.0 / vec2(textureSize(u_shadowMap, 0));
-  float bias = 0.0015;
+  float bias = 0.003;
   for (int y = -1; y <= 1; y++) {
     for (int x = -1; x <= 1; x++) {
       float depth = texture(u_shadowMap, uv + vec2(float(x), float(y)) * texel).r;
@@ -181,7 +182,7 @@ void main() {
   // Coloração baseada em altura e threshold
   float h = (v_height - 1.0) * 10.0; // scale for threshold comparison
   float threshold = u_waterThreshold;
-  
+
   vec3 color;
   float landMask = 0.0;
 
@@ -192,7 +193,7 @@ void main() {
     vec3 deepBlue = vec3(0.01, 0.05, 0.15);
     vec3 shallowBlue = vec3(0.05, 0.45, 0.75);
     color = mix(shallowBlue, deepBlue, depth);
-    
+
     // Specular highlight na água
     vec3 H_water = normalize(L + V);
     float spec_water = pow(sat(dot(N, H_water)), 120.0) * 0.8;
@@ -207,7 +208,7 @@ void main() {
     vec3 forest = vec3(0.1, 0.3, 0.1);
     vec3 meadow = vec3(0.2, 0.6, 0.2);
     color = mix(meadow, forest, g);
-    
+
     // Noise de vegetação
     float vegNoise = hash(v_worldPos * 200.0);
     color = mix(color, color * (0.85 + 0.3 * vegNoise), 0.4);
@@ -228,28 +229,24 @@ void main() {
     landMask = 1.0;
   }
 
-  float shadow = 1.0;
-  float lighting = 1.0;
-  
   if (u_shadowsEnabled) {
-    // With shadows: apply directional lighting and shadow mapping
-    shadow = sampleShadow(v_lightClip);
-    lighting = 0.2 + 0.8 * ndl;
-    
-    // Specular geral (menos pronunciado que na água)
+    float shadow = sampleShadow(v_lightClip);
+
+    // Specular (less pronounced than water)
     vec3 H = normalize(L + V);
     float spec = pow(sat(dot(N, H)), 40.0) * 0.2 * landMask;
-    
-    vec3 col = color * lighting * shadow;
+
+    // Shadow only affects direct lighting, ambient is always preserved
+    vec3 col = color * (0.2 + 0.8 * ndl * shadow);
     col += spec * vec3(1.0) * shadow;
     col += rim * vec3(0.4, 0.6, 1.0) * 0.15; // Atmosfera
-    
+
     outColor = vec4(col, 1.0);
   } else {
     // Without shadows: uniform ambient lighting
     vec3 col = color * 0.85;
     col += rim * vec3(0.4, 0.6, 1.0) * 0.1; // Subtle atmosphere
-    
+
     outColor = vec4(col, 1.0);
   }
 }
@@ -323,7 +320,7 @@ float sampleShadow(vec4 lightClip) {
   float current = proj.z * 0.5 + 0.5;
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
   vec2 texel = 1.0 / vec2(textureSize(u_shadowMap, 0));
-  float bias = 0.0012;
+  float bias = 0.003;
   float shadow = 0.0;
   for (int y=-1; y<=1; y++){
     for (int x=-1; x<=1; x++){
@@ -340,16 +337,16 @@ void main() {
   vec3 V = normalize(u_cameraPos - v_worldPos);
 
   float ndl = sat(dot(N, L));
-  
+
   if (u_shadowsEnabled) {
-    // With shadows: apply directional lighting and shadow mapping
     float shadow = sampleShadow(v_lightClip);
     vec3 H = normalize(L + V);
     float spec = pow(sat(dot(N, H)), 80.0);
-    
-    vec3 col = u_albedo * (0.25 + 0.75 * ndl) * shadow;
+
+    // Shadow only affects direct lighting, ambient is always preserved
+    vec3 col = u_albedo * (0.25 + 0.75 * ndl * shadow);
     col += spec * vec3(0.9, 1.0, 1.0) * 0.25 * shadow;
-    
+
     outColor = vec4(col, 1.0);
   } else {
     // Without shadows: uniform ambient lighting
@@ -376,7 +373,7 @@ function sphereMesh(subdiv: number, settings: PlanetSettings) {
     const n1 = noiseBase(lat, lon);
     const n2 = noiseDetail(lat * 3.0, lon * 3.0);
     const n3 = noiseMicro(lat * 8.0, lon * 8.0);
-    
+
     // Octaves weighting
     const h = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * settings.noiseStrength;
     return h * 0.10;
@@ -405,11 +402,11 @@ function sphereMesh(subdiv: number, settings: PlanetSettings) {
       const lon = u * Math.PI * 2 - Math.PI;
 
       const p = getPos(lat, lon);
-      
+
       // Better normals via central difference
       const pLat = getPos(lat + eps, lon);
       const pLon = getPos(lat, lon + eps);
-      
+
       const vLat = sub(pLat, p);
       const vLon = sub(pLon, p);
       const n = normalize(cross(vLon, vLat));
@@ -523,6 +520,11 @@ export class PlanetRenderer {
   private autoRotate = true;
   private objectDrawLogged = false;
 
+  private dragging = false;
+  private lastPointerX = 0;
+  private lastPointerY = 0;
+  private cameraElevation = 0.11; // polar angle in radians
+
   private shadowVP: Mat4 = mat4Identity();
   private view: Mat4 = mat4Identity();
   private proj: Mat4 = mat4Identity();
@@ -556,7 +558,7 @@ export class PlanetRenderer {
     this.resize();
     this.loop = this.loop.bind(this);
     this.setupEventListeners();
-    
+
     // Initialize asynchronously then start loop
     this.initRenderer().then(() => {
       console.log("✓ Renderer initialized, starting render loop");
@@ -566,12 +568,41 @@ export class PlanetRenderer {
 
   private setupEventListeners() {
     this.canvas.addEventListener('wheel', this.onWheel.bind(this), { passive: false });
+    this.canvas.addEventListener('pointerdown', this.onPointerDown.bind(this));
+    this.canvas.addEventListener('pointermove', this.onPointerMove.bind(this));
+    this.canvas.addEventListener('pointerup', this.onPointerUp.bind(this));
+    this.canvas.addEventListener('pointerleave', this.onPointerUp.bind(this));
+    this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   private onWheel(e: WheelEvent) {
     e.preventDefault();
     const delta = e.deltaY * 0.001;
     this.cameraDist = clamp(this.cameraDist + delta, 1.5, 6.0);
+  }
+
+  private onPointerDown(e: PointerEvent) {
+    if (e.button !== 0) return; // only left button for drag
+    this.dragging = true;
+    this.lastPointerX = e.clientX;
+    this.lastPointerY = e.clientY;
+    this.canvas.setPointerCapture(e.pointerId);
+  }
+
+  private onPointerMove(e: PointerEvent) {
+    if (!this.dragging) return;
+    const dx = e.clientX - this.lastPointerX;
+    const dy = e.clientY - this.lastPointerY;
+    this.lastPointerX = e.clientX;
+    this.lastPointerY = e.clientY;
+
+    this.cameraRot -= dx * 0.005;
+    this.cameraElevation = clamp(this.cameraElevation - dy * 0.004, -1.4, 1.4);
+  }
+
+  private onPointerUp(e: PointerEvent) {
+    if (e.button !== 0 && e.type === 'pointerup') return;
+    this.dragging = false;
   }
 
   private async initRenderer() {
@@ -591,9 +622,9 @@ export class PlanetRenderer {
       console.log("📦 Fetching models...");
       const [treeRes, boatRes] = await Promise.all([
         fetch("/models/tree.obj"),
-        fetch("/models/boat.obj")
+        fetch("/models/12219_boat_v2_L2.obj")
       ]);
-      
+
       if (!treeRes.ok || !boatRes.ok) {
         console.error("❌ Failed to fetch models:", {
           tree: treeRes.status,
@@ -601,15 +632,46 @@ export class PlanetRenderer {
         });
         return false;
       }
-      
+
       const [treeText, boatText] = await Promise.all([
         treeRes.text(),
         boatRes.text()
       ]);
-      
+
       this.treeModel = parseObj(treeText);
       this.boatModel = parseObj(boatText);
-      
+
+      // Normalize boat model: center XY at origin, align keel (Z min) to 0, scale to unit cube, rotate Z-up → Y-up
+      {
+        const b = this.boatModel.bounds;
+        const cx = (b.min[0] + b.max[0]) / 2;
+        const cy = (b.min[1] + b.max[1]) / 2;
+        const cz = b.min[2]; // Keel at Z=0 so boat sits above origin after rotation
+        const maxExt = Math.max(
+          b.max[0] - b.min[0],
+          b.max[1] - b.min[1],
+          b.max[2] - b.min[2],
+        );
+        const s = 1.0 / maxExt;
+        const pos = this.boatModel.positions;
+        for (let i = 0; i < pos.length; i += 3) {
+          const x = (pos[i] - cx) * s;
+          const y = (pos[i + 1] - cy) * s;
+          const z = (pos[i + 2] - cz) * s;
+          // Rotate 90° around X: (x, y, z) → (x, z, -y)
+          pos[i]     = x;
+          pos[i + 1] = z;
+          pos[i + 2] = -y;
+        }
+        const nor = this.boatModel.normals;
+        for (let i = 0; i < nor.length; i += 3) {
+          const ny = nor[i + 1];
+          const nz = nor[i + 2];
+          nor[i + 1] = nz;
+          nor[i + 2] = -ny;
+        }
+      }
+
       console.log("✅ Models loaded:", {
         tree: `${this.treeModel.positions.length / 3} verts, ${this.treeModel.indices.length / 3} tris`,
         boat: `${this.boatModel.positions.length / 3} verts, ${this.boatModel.indices.length / 3} tris`
@@ -624,7 +686,7 @@ export class PlanetRenderer {
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
-    this.canvas.removeEventListener('wheel', this.onWheel.bind(this));
+    // Note: bound listeners from setupEventListeners are GC'd with the canvas
   }
 
   setSettings(next: PlanetSettings, opts?: { rebuild?: boolean; redistribute?: boolean }) {
@@ -788,7 +850,9 @@ export class PlanetRenderer {
     const noiseMicro = makeNoiseSampler(this.settings.seed + "_micro", this.settings.noiseType as NoiseType);
 
     const count = this.settings.objectCount;
-    const out: PlacedObject[] = [];
+    const maxBoats = 5;
+    const trees: PlacedObject[] = [];
+    const boats: PlacedObject[] = [];
 
     for (let i = 0; i < count; i++) {
       const z = randRange(rng, -1, 1);
@@ -798,7 +862,7 @@ export class PlanetRenderer {
 
       const lat = Math.asin(clamp(base[1], -1, 1));
       const lon = Math.atan2(base[2], base[0]);
-      
+
       const n1 = noiseBase(lat, lon);
       const n2 = noiseDetail(lat * 3.0, lon * 3.0);
       const n3 = noiseMicro(lat * 8.0, lon * 8.0);
@@ -810,12 +874,12 @@ export class PlanetRenderer {
       const bitangent = normalize(cross(normal, tangent));
 
       const kind: ObjectKind = isWater ? "boat" : "tree";
-      const scale = isWater ? randRange(rng, 0.32, 0.44) : randRange(rng, 0.22, 0.34);
+      const scale = isWater ? randRange(rng, 0.10, 0.15) : randRange(rng, 0.22, 0.34);
 
-      // position slightly above surface
-      const pos = mulScalar(normal, 1.0 + height + (isWater ? 0.015 : 0.01));
+      // position on surface (boat keel is at Y=0 so it sits above naturally; sink slightly for realism)
+      const pos = mulScalar(normal, 1.0 + height + (isWater ? -0.005 : 0.01));
 
-      out.push({
+      const obj: PlacedObject = {
         id: `${i}-${Math.floor(rng() * 1e9)}`,
         kind,
         position: pos,
@@ -824,13 +888,19 @@ export class PlanetRenderer {
         bitangent,
         scale,
         phase: rng() * Math.PI * 2,
-      });
+      };
+
+      if (kind === "boat") {
+        if (boats.length < maxBoats) boats.push(obj);
+      } else {
+        trees.push(obj);
+      }
     }
 
-    this.placed = out;
-    console.log(`✓ Redistributed ${out.length} objects:`, {
-      trees: out.filter(o => o.kind === 'tree').length,
-      boats: out.filter(o => o.kind === 'boat').length
+    this.placed = [...trees, ...boats];
+    console.log(`✓ Redistributed ${this.placed.length} objects:`, {
+      trees: trees.length,
+      boats: boats.length
     });
   }
 
@@ -847,8 +917,14 @@ export class PlanetRenderer {
 
     const dirView: Vec3 = normalize([x * aspect * tan, y * tan, -1]);
 
-    // Camera at (0,0,dist) rotated around Y by this.cameraRot
-    const camPos: Vec3 = [Math.sin(this.cameraRot) * this.cameraDist, 0.35, Math.cos(this.cameraRot) * this.cameraDist];
+    // Camera at spherical coordinates (azimuth=cameraRot, elevation=cameraElevation)
+    const cosElev = Math.cos(this.cameraElevation);
+    const sinElev = Math.sin(this.cameraElevation);
+    const camPos: Vec3 = [
+      Math.sin(this.cameraRot) * cosElev * this.cameraDist,
+      sinElev * this.cameraDist,
+      Math.cos(this.cameraRot) * cosElev * this.cameraDist,
+    ];
     const center: Vec3 = [0, 0, 0];
     const up: Vec3 = [0, 1, 0];
     // Derive camera basis
@@ -868,7 +944,7 @@ export class PlanetRenderer {
     // estimate water by noise at that spot
     const lat = Math.asin(clamp(normal[1], -1, 1));
     const lon = Math.atan2(normal[2], normal[0]);
-    
+
     const noiseBase = makeNoiseSampler(this.settings.seed, this.settings.noiseType as NoiseType);
     const noiseDetail = makeNoiseSampler(this.settings.seed + "_detail", this.settings.noiseType as NoiseType);
     const noiseMicro = makeNoiseSampler(this.settings.seed + "_micro", this.settings.noiseType as NoiseType);
@@ -903,10 +979,10 @@ export class PlanetRenderer {
 
     const kind: ObjectKind = pick.isWater ? "boat" : "tree";
     const rng = mulberry32(hashStringToUint(this.settings.seed + "_place") ^ (this.placed.length * 2654435761));
-    const scale = kind === "boat" ? randRange(rng, 0.34, 0.48) : randRange(rng, 0.22, 0.34);
+    const scale = kind === "boat" ? randRange(rng, 0.10, 0.15) : randRange(rng, 0.22, 0.34);
 
-    // Keep them hugging the surface
-    const pos = mulScalar(normal, len(pick.worldPos) + (kind === "boat" ? 0.02 : 0.012));
+    // Keep them hugging the surface (boat keel at Y=0, sinks slightly for realism)
+    const pos = mulScalar(normal, len(pick.worldPos) + (kind === "boat" ? -0.005 : 0.012));
 
     this.placed = [
       ...this.placed,
@@ -921,7 +997,7 @@ export class PlanetRenderer {
         phase: rng() * Math.PI * 2,
       },
     ];
-    
+
     console.log("✅ Object added! Total placed:", this.placed.length, "Last object:", {
       kind,
       scale,
@@ -944,23 +1020,29 @@ export class PlanetRenderer {
     const uWorld = gl.getUniformLocation(this.shadowProg, "u_world");
     const uLightVP = gl.getUniformLocation(this.shadowProg, "u_lightVP");
 
-    // planet
+    // planet — cull front faces so shadow map stores back-face depth (natural bias)
+    gl.cullFace(gl.FRONT);
     gl.bindVertexArray(this.planetVao!);
     gl.uniformMatrix4fv(uWorld, false, mat4RotateY(this.rot));
     gl.uniformMatrix4fv(uLightVP, false, this.shadowVP);
     gl.drawElements(gl.TRIANGLES, this.planetIndexCount, gl.UNSIGNED_INT, 0);
 
-    // objects
+    // objects — disable culling so left-handed basis doesn't hide faces from light
+    gl.disable(gl.CULL_FACE);
+
+    const planetRot = mat4RotateY(this.rot);
+
     const drawObj = (o: PlacedObject) => {
       let pos = o.position as Vec3;
 
-      // boat bob
+      // boat bob (gentle)
       if (o.kind === "boat") {
-        const bob = Math.sin(timeS * 2.2 + o.phase) * 0.012;
+        const bob = Math.sin(timeS * 1.8 + o.phase) * 0.005;
         pos = add(pos, mulScalar(o.normal as Vec3, bob));
       }
 
-      const world = this.worldFromBasis(pos, o.normal as Vec3, o.tangent as Vec3, o.bitangent as Vec3, o.scale);
+      const objLocal = this.worldFromBasis(pos, o.normal as Vec3, o.tangent as Vec3, o.bitangent as Vec3, o.scale);
+      const world = mat4Mul(planetRot, objLocal);
       gl.uniformMatrix4fv(uWorld, false, world);
       gl.uniformMatrix4fv(uLightVP, false, this.shadowVP);
 
@@ -977,6 +1059,8 @@ export class PlanetRenderer {
 
     for (const o of this.placed) drawObj(o);
 
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
     gl.bindVertexArray(null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.colorMask(true, true, true, true);
@@ -990,8 +1074,14 @@ export class PlanetRenderer {
     gl.clearColor(0.03, 0.04, 0.07, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    // camera
-    const camPos: Vec3 = [Math.sin(this.cameraRot) * this.cameraDist, 0.35, Math.cos(this.cameraRot) * this.cameraDist];
+    // camera (spherical coords: cameraRot = azimuth, cameraElevation = polar angle)
+    const cosElev = Math.cos(this.cameraElevation);
+    const sinElev = Math.sin(this.cameraElevation);
+    const camPos: Vec3 = [
+      Math.sin(this.cameraRot) * cosElev * this.cameraDist,
+      sinElev * this.cameraDist,
+      Math.cos(this.cameraRot) * cosElev * this.cameraDist,
+    ];
     this.view = mat4LookAt(camPos, [0, 0, 0], [0, 1, 0]);
 
     // Bind shadow map
@@ -1028,6 +1118,8 @@ export class PlanetRenderer {
     gl.uniform1i(gl.getUniformLocation(this.objProg, "u_shadowMap"), 0);
     gl.uniform1i(gl.getUniformLocation(this.objProg, "u_shadowsEnabled"), this.settings.shadowsEnabled ? 1 : 0);
 
+    const planetRot = mat4RotateY(this.rot);
+
     let drawnCount = 0;
     const drawObj = (o: PlacedObject) => {
       drawnCount++;
@@ -1048,7 +1140,7 @@ export class PlanetRenderer {
       let b = o.bitangent as Vec3;
 
       if (o.kind === "boat") {
-        const bob = Math.sin(timeS * 2.2 + o.phase) * 0.012;
+        const bob = Math.sin(timeS * 1.8 + o.phase) * 0.005;
         pos = add(pos, mulScalar(o.normal as Vec3, bob));
         albedo = [0.12, 0.62, 0.78];
       } else {
@@ -1059,7 +1151,8 @@ export class PlanetRenderer {
         albedo = [0.18, 0.58, 0.26];
       }
 
-      const world = this.worldFromBasis(pos, o.normal as Vec3, t, b, o.scale);
+      const objLocal = this.worldFromBasis(pos, o.normal as Vec3, t, b, o.scale);
+      const world = mat4Mul(planetRot, objLocal);
       gl.uniformMatrix4fv(gl.getUniformLocation(this.objProg, "u_world"), false, world);
       gl.uniform3f(gl.getUniformLocation(this.objProg, "u_albedo"), albedo[0], albedo[1], albedo[2]);
 

@@ -48,13 +48,13 @@ export function mat4Identity(): Mat4 {
 
 export function mat4Mul(a: Mat4, b: Mat4): Mat4 {
   const out = new Float32Array(16);
-  for (let r = 0; r < 4; r++) {
-    for (let c = 0; c < 4; c++) {
-      out[c + r * 4] =
-        a[r * 4 + 0] * b[c + 0] +
-        a[r * 4 + 1] * b[c + 4] +
-        a[r * 4 + 2] * b[c + 8] +
-        a[r * 4 + 3] * b[c + 12];
+  for (let c = 0; c < 4; c++) {
+    for (let r = 0; r < 4; r++) {
+      out[c * 4 + r] =
+        a[0 * 4 + r] * b[c * 4 + 0] +
+        a[1 * 4 + r] * b[c * 4 + 1] +
+        a[2 * 4 + r] * b[c * 4 + 2] +
+        a[3 * 4 + r] * b[c * 4 + 3];
     }
   }
   return out;
