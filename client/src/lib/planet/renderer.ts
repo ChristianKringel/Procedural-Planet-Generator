@@ -161,14 +161,14 @@ float sampleShadow(vec4 lightClip) {
 
   float shadow = 0.0;
   vec2 texel = 1.0 / vec2(textureSize(u_shadowMap, 0));
-  float bias = 0.003;
-  for (int y = -1; y <= 1; y++) {
-    for (int x = -1; x <= 1; x++) {
+  float bias = 0.001;
+  for (int y = -2; y <= 2; y++) {
+    for (int x = -2; x <= 2; x++) {
       float depth = texture(u_shadowMap, uv + vec2(float(x), float(y)) * texel).r;
       shadow += (current - bias) <= depth ? 1.0 : 0.0;
     }
   }
-  return shadow / 9.0;
+  return shadow / 25.0;
 }
 
 void main() {
@@ -320,15 +320,15 @@ float sampleShadow(vec4 lightClip) {
   float current = proj.z * 0.5 + 0.5;
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
   vec2 texel = 1.0 / vec2(textureSize(u_shadowMap, 0));
-  float bias = 0.003;
+  float bias = 0.001;
   float shadow = 0.0;
-  for (int y=-1; y<=1; y++){
-    for (int x=-1; x<=1; x++){
+  for (int y=-2; y<=2; y++){
+    for (int x=-2; x<=2; x++){
       float depth = texture(u_shadowMap, uv + vec2(float(x), float(y)) * texel).r;
       shadow += (current - bias) <= depth ? 1.0 : 0.0;
     }
   }
-  return shadow / 9.0;
+  return shadow / 25.0;
 }
 
 void main() {
@@ -368,26 +368,27 @@ function sphereMesh(subdiv: number, settings: PlanetSettings) {
   const noiseDetail = makeNoiseSampler(settings.seed + "_detail", settings.noiseType as NoiseType);
   const noiseMicro = makeNoiseSampler(settings.seed + "_micro", settings.noiseType as NoiseType);
 
-  // Helper for computing displacement with multiple octaves (fractal noise)
-  const getDisplacement = (lat: number, lon: number) => {
-    const n1 = noiseBase(lat, lon);
-    const n2 = noiseDetail(lat * 3.0, lon * 3.0);
-    const n3 = noiseMicro(lat * 8.0, lon * 8.0);
+  // Compute displacement from 3D Cartesian sphere direction (unit vector).
+  // Sampling noise in 3D eliminates the longitude seam and pole convergence
+  // artifacts that 2D lat/lon mapping causes.
+  const getDisplacement = (dir: Vec3) => {
+    const [dx, dy, dz] = dir;
+    const n1 = noiseBase(dx, dy, dz);
+    const n2 = noiseDetail(dx * 3.0, dy * 3.0, dz * 3.0);
+    const n3 = noiseMicro(dx * 8.0, dy * 8.0, dz * 8.0);
 
-    // Octaves weighting
     const h = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * settings.noiseStrength;
     return h * 0.10;
   };
 
-  // Build vertices and calculate normals more accurately based on neighbors for relevo visual
   const getPos = (lat: number, lon: number) => {
     const cl = Math.cos(lat);
     const sl = Math.sin(lat);
     const cx = Math.cos(lon);
     const sx = Math.sin(lon);
-    const base: Vec3 = [cl * cx, sl, cl * sx];
-    const d = getDisplacement(lat, lon);
-    return mulScalar(base, 1.0 + d);
+    const dir: Vec3 = [cl * cx, sl, cl * sx];
+    const d = getDisplacement(dir);
+    return mulScalar(dir, 1.0 + d);
   };
 
   const eps = 0.01;
@@ -395,21 +396,26 @@ function sphereMesh(subdiv: number, settings: PlanetSettings) {
   for (let y = 0; y <= latSeg; y++) {
     const v = y / latSeg;
     const lat = (v - 0.5) * Math.PI;
+    const rowFromPole = Math.min(y, latSeg - y);
 
     for (let x = 0; x <= lonSeg; x++) {
       const u = x / lonSeg;
-      // Wrap longitude properly to avoid seam at -π/π boundary
       const lon = u * Math.PI * 2 - Math.PI;
 
       const p = getPos(lat, lon);
 
-      // Better normals via central difference
-      const pLat = getPos(lat + eps, lon);
-      const pLon = getPos(lat, lon + eps);
-
-      const vLat = sub(pLat, p);
-      const vLon = sub(pLon, p);
-      const n = normalize(cross(vLon, vLat));
+      // At the poles the longitude derivative degenerates (cos(lat)≈0 collapses
+      // all longitudes to the same point), so use the radial normal instead.
+      let n: Vec3;
+      if (rowFromPole < 1) {
+        n = normalize(p);
+      } else {
+        const pLat = getPos(lat + eps, lon);
+        const pLon = getPos(lat, lon + eps);
+        const vLat = sub(pLat, p);
+        const vLon = sub(pLon, p);
+        n = normalize(cross(vLon, vLat));
+      }
 
       positions.push(p[0], p[1], p[2]);
       normals.push(n[0], n[1], n[2]);
@@ -833,13 +839,15 @@ export class PlanetRenderer {
   }
 
   private computeLightVP() {
-    // directional light: ortho around planet
+    // directional light: ortho tightly around planet
     const lightPos: Vec3 = mulScalar(this.lightDir, -7.5);
     const center: Vec3 = [0, 0, 0];
     const up: Vec3 = [0, 1, 0];
 
     const lightView = mat4LookAt(lightPos, center, up);
-    const lightProj = mat4Ortho(-3.2, 3.2, -3.2, 3.2, 0.1, 20);
+    // Tight frustum: planet radius ~1.15, so ±1.5 covers it with margin.
+    // Near/far: light at 7.5, planet surface at ~6.3–8.7 from light.
+    const lightProj = mat4Ortho(-1.5, 1.5, -1.5, 1.5, 5.5, 10.0);
     this.shadowVP = mat4Mul(lightProj, lightView);
   }
 
@@ -860,12 +868,9 @@ export class PlanetRenderer {
       const r = Math.sqrt(1 - z * z);
       const base: Vec3 = [r * Math.cos(t), z, r * Math.sin(t)];
 
-      const lat = Math.asin(clamp(base[1], -1, 1));
-      const lon = Math.atan2(base[2], base[0]);
-
-      const n1 = noiseBase(lat, lon);
-      const n2 = noiseDetail(lat * 3.0, lon * 3.0);
-      const n3 = noiseMicro(lat * 8.0, lon * 8.0);
+      const n1 = noiseBase(base[0], base[1], base[2]);
+      const n2 = noiseDetail(base[0] * 3.0, base[1] * 3.0, base[2] * 3.0);
+      const n3 = noiseMicro(base[0] * 8.0, base[1] * 8.0, base[2] * 8.0);
       const height = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * this.settings.noiseStrength * 0.10;
       const isWater = height < this.settings.waterThreshold * 0.10;
 
@@ -942,16 +947,13 @@ export class PlanetRenderer {
     const normal = normalize(hitPos);
 
     // estimate water by noise at that spot
-    const lat = Math.asin(clamp(normal[1], -1, 1));
-    const lon = Math.atan2(normal[2], normal[0]);
-
     const noiseBase = makeNoiseSampler(this.settings.seed, this.settings.noiseType as NoiseType);
     const noiseDetail = makeNoiseSampler(this.settings.seed + "_detail", this.settings.noiseType as NoiseType);
     const noiseMicro = makeNoiseSampler(this.settings.seed + "_micro", this.settings.noiseType as NoiseType);
 
-    const n1 = noiseBase(lat, lon);
-    const n2 = noiseDetail(lat * 3.0, lon * 3.0);
-    const n3 = noiseMicro(lat * 8.0, lon * 8.0);
+    const n1 = noiseBase(normal[0], normal[1], normal[2]);
+    const n2 = noiseDetail(normal[0] * 3.0, normal[1] * 3.0, normal[2] * 3.0);
+    const n3 = noiseMicro(normal[0] * 8.0, normal[1] * 8.0, normal[2] * 8.0);
     const height = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * this.settings.noiseStrength * 0.10;
     const isWater = height < this.settings.waterThreshold * 0.10;
 
@@ -1020,6 +1022,10 @@ export class PlanetRenderer {
     const uWorld = gl.getUniformLocation(this.shadowProg, "u_world");
     const uLightVP = gl.getUniformLocation(this.shadowProg, "u_lightVP");
 
+    // Hardware polygon offset bias — more precise than shader-only bias
+    gl.enable(gl.POLYGON_OFFSET_FILL);
+    gl.polygonOffset(1.5, 2.0);
+
     // planet — cull front faces so shadow map stores back-face depth (natural bias)
     gl.cullFace(gl.FRONT);
     gl.bindVertexArray(this.planetVao!);
@@ -1061,6 +1067,7 @@ export class PlanetRenderer {
 
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
+    gl.disable(gl.POLYGON_OFFSET_FILL);
     gl.bindVertexArray(null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.colorMask(true, true, true, true);

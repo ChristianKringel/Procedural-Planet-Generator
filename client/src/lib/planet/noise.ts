@@ -1,10 +1,9 @@
 import { hashStringToUint, mulberry32 } from "./random";
 import type { NoiseType } from "@shared/schema";
 
-// Lightweight procedural noise (no external libs).
-// - perlin: classic gradient noise (2D) sampled on sphere via lat/long
-// - simplex: "simplex-ish" value noise w/ skewing (approx) — good enough visually
-// - random: hash-based value noise
+// Lightweight procedural 3D noise (no external libs).
+// Sampled in Cartesian coordinates on the sphere surface to avoid
+// longitude-seam and pole-convergence artifacts inherent to 2D lat/lon mapping.
 
 function fade(t: number) {
   return t * t * t * (t * (t * 6 - 15) + 10);
@@ -13,74 +12,74 @@ function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
 }
 
-function hash2i(x: number, y: number, seed: number) {
-  // integer hash -> [0,1)
-  let h = seed ^ (x * 374761393) ^ (y * 668265263);
+function hash3i(x: number, y: number, z: number, seed: number) {
+  let h = seed ^ (x * 374761393) ^ (y * 668265263) ^ (z * 1013904223);
   h = (h ^ (h >>> 13)) * 1274126177;
   h ^= h >>> 16;
   return (h >>> 0) / 4294967296;
 }
 
-function grad2(x: number, y: number, seed: number) {
-  const a = hash2i(x, y, seed) * Math.PI * 2;
-  return [Math.cos(a), Math.sin(a)] as const;
+const GRAD3: readonly (readonly [number, number, number])[] = [
+  [1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],
+  [1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],
+  [0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1],
+];
+
+function grad3(ix: number, iy: number, iz: number, seed: number) {
+  let h = seed ^ (ix * 374761393) ^ (iy * 668265263) ^ (iz * 1013904223);
+  h = (h ^ (h >>> 13)) * 1274126177;
+  h ^= h >>> 16;
+  return GRAD3[(h >>> 0) % 12];
 }
 
-function perlin2(x: number, y: number, seed: number) {
-  const x0 = Math.floor(x);
-  const y0 = Math.floor(y);
-  const x1 = x0 + 1;
-  const y1 = y0 + 1;
+function perlin3(x: number, y: number, z: number, seed: number) {
+  const x0 = Math.floor(x), y0 = Math.floor(y), z0 = Math.floor(z);
+  const x1 = x0 + 1, y1 = y0 + 1, z1 = z0 + 1;
+  const sx = fade(x - x0), sy = fade(y - y0), sz = fade(z - z0);
+  const dx0 = x - x0, dy0 = y - y0, dz0 = z - z0;
+  const dx1 = x - x1, dy1 = y - y1, dz1 = z - z1;
 
-  const sx = fade(x - x0);
-  const sy = fade(y - y0);
+  const g000 = grad3(x0,y0,z0,seed); const n000 = g000[0]*dx0 + g000[1]*dy0 + g000[2]*dz0;
+  const g100 = grad3(x1,y0,z0,seed); const n100 = g100[0]*dx1 + g100[1]*dy0 + g100[2]*dz0;
+  const g010 = grad3(x0,y1,z0,seed); const n010 = g010[0]*dx0 + g010[1]*dy1 + g010[2]*dz0;
+  const g110 = grad3(x1,y1,z0,seed); const n110 = g110[0]*dx1 + g110[1]*dy1 + g110[2]*dz0;
+  const g001 = grad3(x0,y0,z1,seed); const n001 = g001[0]*dx0 + g001[1]*dy0 + g001[2]*dz1;
+  const g101 = grad3(x1,y0,z1,seed); const n101 = g101[0]*dx1 + g101[1]*dy0 + g101[2]*dz1;
+  const g011 = grad3(x0,y1,z1,seed); const n011 = g011[0]*dx0 + g011[1]*dy1 + g011[2]*dz1;
+  const g111 = grad3(x1,y1,z1,seed); const n111 = g111[0]*dx1 + g111[1]*dy1 + g111[2]*dz1;
 
-  const g00 = grad2(x0, y0, seed);
-  const g10 = grad2(x1, y0, seed);
-  const g01 = grad2(x0, y1, seed);
-  const g11 = grad2(x1, y1, seed);
-
-  const dx0 = x - x0;
-  const dy0 = y - y0;
-  const dx1 = x - x1;
-  const dy1 = y - y1;
-
-  const n00 = g00[0] * dx0 + g00[1] * dy0;
-  const n10 = g10[0] * dx1 + g10[1] * dy0;
-  const n01 = g01[0] * dx0 + g01[1] * dy1;
-  const n11 = g11[0] * dx1 + g11[1] * dy1;
-
-  const ix0 = lerp(n00, n10, sx);
-  const ix1 = lerp(n01, n11, sx);
-  const v = lerp(ix0, ix1, sy);
-
-  // normalize-ish to [-1,1]
-  return v * 1.6;
+  return lerp(
+    lerp(lerp(n000, n100, sx), lerp(n010, n110, sx), sy),
+    lerp(lerp(n001, n101, sx), lerp(n011, n111, sx), sy),
+    sz,
+  ) * 1.4;
 }
 
-function valueNoise2(x: number, y: number, seed: number) {
-  const x0 = Math.floor(x);
-  const y0 = Math.floor(y);
-  const x1 = x0 + 1;
-  const y1 = y0 + 1;
+function valueNoise3(x: number, y: number, z: number, seed: number) {
+  const x0 = Math.floor(x), y0 = Math.floor(y), z0 = Math.floor(z);
+  const x1 = x0 + 1, y1 = y0 + 1, z1 = z0 + 1;
+  const sx = fade(x - x0), sy = fade(y - y0), sz = fade(z - z0);
 
-  const sx = fade(x - x0);
-  const sy = fade(y - y0);
-
-  const v00 = hash2i(x0, y0, seed) * 2 - 1;
-  const v10 = hash2i(x1, y0, seed) * 2 - 1;
-  const v01 = hash2i(x0, y1, seed) * 2 - 1;
-  const v11 = hash2i(x1, y1, seed) * 2 - 1;
-
-  const ix0 = lerp(v00, v10, sx);
-  const ix1 = lerp(v01, v11, sx);
-  return lerp(ix0, ix1, sy);
+  return lerp(
+    lerp(
+      lerp(hash3i(x0,y0,z0,seed)*2-1, hash3i(x1,y0,z0,seed)*2-1, sx),
+      lerp(hash3i(x0,y1,z0,seed)*2-1, hash3i(x1,y1,z0,seed)*2-1, sx),
+      sy,
+    ),
+    lerp(
+      lerp(hash3i(x0,y0,z1,seed)*2-1, hash3i(x1,y0,z1,seed)*2-1, sx),
+      lerp(hash3i(x0,y1,z1,seed)*2-1, hash3i(x1,y1,z1,seed)*2-1, sx),
+      sy,
+    ),
+    sz,
+  );
 }
 
-function fbm2(
-  base: (x: number, y: number, seed: number) => number,
+function fbm3(
+  base: (x: number, y: number, z: number, seed: number) => number,
   x: number,
   y: number,
+  z: number,
   seed: number,
   octaves = 5,
 ) {
@@ -89,7 +88,7 @@ function fbm2(
   let sum = 0;
   let norm = 0;
   for (let i = 0; i < octaves; i++) {
-    sum += amp * base(x * freq, y * freq, seed + i * 1013);
+    sum += amp * base(x * freq, y * freq, z * freq, seed + i * 1013);
     norm += amp;
     amp *= 0.5;
     freq *= 2;
@@ -101,28 +100,15 @@ export function makeNoiseSampler(seedStr: string, type: NoiseType) {
   const seed = hashStringToUint(seedStr);
   const rng = mulberry32(seed ^ 0x9e3779b9);
 
-  return function sample(nlat: number, nlon: number) {
-    // nlat: [-pi/2..pi/2], nlon: [-pi..pi]
-    const u = (nlon / (Math.PI * 2)) + 0.5;
-    const v = (nlat / Math.PI) + 0.5;
-
-    // Avoid seam: use 3-sample blend at edges by wrapping u
-    const x = u * 6.0;
-    const y = v * 3.5;
-
+  return function sample(x: number, y: number, z: number) {
     if (type === "perlin") {
-      return fbm2(perlin2, x, y, seed, 6);
+      return fbm3(perlin3, x, y, z, seed, 6);
     }
     if (type === "simplex") {
-      // "simplex-ish": skew coordinates to create diagonal features; fbm on value noise
-      const s = (x + y) * 0.3660254;
-      const xs = x + s;
-      const ys = y + s;
-      return fbm2(valueNoise2, xs, ys, seed ^ 0x51ed270b, 6);
+      const s = (x + y + z) * 0.3660254;
+      return fbm3(valueNoise3, x + s, y + s, z + s, seed ^ 0x51ed270b, 6);
     }
-
     // random: hash-based value noise with fewer octaves (chunkier)
-    const t = fbm2(valueNoise2, x, y, (seed ^ 0xa2c2a) + Math.floor(rng() * 10000), 3);
-    return t;
+    return fbm3(valueNoise3, x, y, z, (seed ^ 0xa2c2a) + Math.floor(rng() * 10000), 3);
   };
 }
