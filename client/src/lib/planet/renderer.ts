@@ -902,8 +902,7 @@ export class PlanetRenderer {
       const kind: ObjectKind = isWater ? "boat" : "tree";
       const scale = isWater ? randRange(rng, 0.10, 0.15) : randRange(rng, 0.06, 0.12);
 
-      // position on surface (boat keel is at Y=0 so it sits above naturally; sink slightly for realism)
-      const pos = mulScalar(normal, 1.0 + height + (isWater ? -0.005 : 0.01));
+      const pos = mulScalar(normal, 1.0 + height + (isWater ? -0.003 : 0.0));
 
       const obj: PlacedObject = {
         id: `${i}-${Math.floor(rng() * 1e9)}`,
@@ -961,51 +960,72 @@ export class PlanetRenderer {
     // view -> world: dir = s*x + u*y + (-f)*z (since view forward is -Z)
     const dirWorld = normalize(add(add(mulScalar(s, dirView[0]), mulScalar(u, dirView[1])), mulScalar(f, -dirView[2])));
 
-    const tHit = raySphereIntersect(camPos, dirWorld, 1.25); // loose radius for displaced sphere
+    // First hit with loose bounding sphere
+    const tHit = raySphereIntersect(camPos, dirWorld, 1.25);
     if (tHit == null) return { hit: false };
 
-    const hitPos = add(camPos, mulScalar(dirWorld, tHit));
-    const normal = normalize(hitPos);
+    // Un-rotate from world space to planet-local space (inverse of mat4RotateY(rot))
+    const cosR = Math.cos(this.rot);
+    const sinR = Math.sin(this.rot);
+    const toLocal = (d: Vec3): Vec3 => [
+      d[0] * cosR + d[2] * sinR,
+      d[1],
+      -d[0] * sinR + d[2] * cosR,
+    ];
 
-    // estimate water by noise at that spot
     const noiseBase = makeNoiseSampler(this.settings.seed, this.settings.noiseType as NoiseType);
     const noiseDetail = makeNoiseSampler(this.settings.seed + "_detail", this.settings.noiseType as NoiseType);
     const noiseMicro = makeNoiseSampler(this.settings.seed + "_micro", this.settings.noiseType as NoiseType);
 
-    const n1 = noiseBase(normal[0], normal[1], normal[2]);
-    const n2 = noiseDetail(normal[0] * 3.0, normal[1] * 3.0, normal[2] * 3.0);
-    const n3 = noiseMicro(normal[0] * 8.0, normal[1] * 8.0, normal[2] * 8.0);
-    const height = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * this.settings.noiseStrength * 0.10;
+    const computeHeight = (ld: Vec3) => {
+      const n1 = noiseBase(ld[0], ld[1], ld[2]);
+      const n2 = noiseDetail(ld[0] * 3.0, ld[1] * 3.0, ld[2] * 3.0);
+      const n3 = noiseMicro(ld[0] * 8.0, ld[1] * 8.0, ld[2] * 8.0);
+      return (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * this.settings.noiseStrength * 0.10;
+    };
+
+    // Iterative refinement: the loose sphere hit gives a rough direction,
+    // then re-intersect with the actual surface radius to correct for parallax.
+    let worldDir = normalize(add(camPos, mulScalar(dirWorld, tHit)));
+    let localDir = toLocal(worldDir);
+    let height = computeHeight(localDir);
+
+    for (let i = 0; i < 3; i++) {
+      const surfaceR = 1.0 + height;
+      const tNew = raySphereIntersect(camPos, dirWorld, surfaceR);
+      if (tNew == null) break;
+      worldDir = normalize(add(camPos, mulScalar(dirWorld, tNew)));
+      localDir = toLocal(worldDir);
+      height = computeHeight(localDir);
+    }
+
     const isWater = height < this.settings.waterThreshold * 0.10;
 
     return {
       hit: true,
-      worldPos: hitPos,
-      worldNormal: normal,
+      worldPos: mulScalar(worldDir, 1.0 + height),
+      worldNormal: worldDir,
+      localDir,
+      height,
       isWater,
     };
   }
 
   placeObjectFromPick(pick: PickResult) {
-    if (!pick.hit || !pick.worldPos || !pick.worldNormal) {
+    if (!pick.hit || !pick.localDir || pick.height == null) {
       console.log("❌ Cannot place: invalid pick", pick);
       return;
     }
 
-    console.log("✓ Placing object:", pick.isWater ? "boat" : "tree", "at", pick.worldPos);
-    console.log("  VAOs ready?", { tree: !!this.treeVao, boat: !!this.boatVao });
-    console.log("  Placed count before:", this.placed.length);
-
-    const normal = normalize(pick.worldNormal);
-    const tangent = anyPerpendicular(normal);
-    const bitangent = normalize(cross(normal, tangent));
-
     const kind: ObjectKind = pick.isWater ? "boat" : "tree";
     const rng = mulberry32(hashStringToUint(this.settings.seed + "_place") ^ (this.placed.length * 2654435761));
-    const scale = kind === "boat" ? randRange(rng, 0.10, 0.15) : randRange(rng, 0.22, 0.34);
+    const scale = kind === "boat" ? randRange(rng, 0.10, 0.15) : randRange(rng, 0.06, 0.12);
 
-    // Keep them hugging the surface (boat keel at Y=0, sinks slightly for realism)
-    const pos = mulScalar(normal, len(pick.worldPos) + (kind === "boat" ? -0.005 : 0.012));
+    // Use planet-local direction and analytical noise height (not ray hit distance)
+    const normal = normalize(pick.localDir);
+    const tangent = anyPerpendicular(normal);
+    const bitangent = normalize(cross(normal, tangent));
+    const pos = mulScalar(normal, 1.0 + pick.height + (kind === "boat" ? -0.003 : 0.0));
 
     this.placed = [
       ...this.placed,
@@ -1020,13 +1040,6 @@ export class PlanetRenderer {
         phase: rng() * Math.PI * 2,
       },
     ];
-
-    console.log("✅ Object added! Total placed:", this.placed.length, "Last object:", {
-      kind,
-      scale,
-      position: pos,
-      posLength: len(pos)
-    });
   }
 
   private renderShadowPass(timeS: number) {

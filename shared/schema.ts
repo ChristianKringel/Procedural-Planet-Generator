@@ -18,6 +18,8 @@ export interface PickResult {
   hit: boolean;
   worldPos?: [number, number, number];
   worldNormal?: [number, number, number];
+  localDir?: [number, number, number];
+  height?: number;
   isWater?: boolean;
 }
 
