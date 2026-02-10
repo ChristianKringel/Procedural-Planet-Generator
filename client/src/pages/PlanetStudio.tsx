@@ -21,8 +21,8 @@ import { cn } from "@/lib/utils";
 const DEFAULT_SETTINGS: PlanetSettings = {
   seed: "aurora-001",
   subdivisions: 120,
-  waterThreshold: 0.35,
-  noiseStrength: 0.5,
+  waterThreshold: 0.0,
+  noiseStrength: 1.5,
   noiseType: "simplex",
   objectCount: 420,
   shadowsEnabled: true,
@@ -187,10 +187,6 @@ export default function PlanetStudio() {
   };
 
   const onCanvasPointerDown = (e: React.PointerEvent) => {
-    // Only right-click places objects; left-click is handled by renderer for drag
-    if (e.button !== 2) return;
-    e.preventDefault();
-
     const r = rendererRef.current;
     if (!r) return;
 
@@ -536,8 +532,7 @@ export default function PlanetStudio() {
                     text-xs text-muted-foreground leading-relaxed noise-overlay
                   "
                 >
-                  Tip: drag with{" "}
-                  <span className="text-foreground font-semibold">left mouse</span> to rotate. Right-click to place{" "}
+                  Tip: click the planet to place{" "}
                   <span className="text-foreground font-semibold">trees</span> on land or{" "}
                   <span className="text-foreground font-semibold">boats</span> on water.
                 </div>
@@ -602,7 +597,7 @@ export default function PlanetStudio() {
                       ref={canvasRef}
                       className="
                         relative h-full w-full
-                        cursor-grab active:cursor-grabbing
+                        cursor-crosshair
                         focus:outline-none
                       "
                       data-testid="webgl-canvas"
