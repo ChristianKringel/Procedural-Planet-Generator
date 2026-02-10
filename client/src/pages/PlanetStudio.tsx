@@ -187,6 +187,10 @@ export default function PlanetStudio() {
   };
 
   const onCanvasPointerDown = (e: React.PointerEvent) => {
+    // Only right-click places objects; left-click is handled by renderer for drag
+    if (e.button !== 2) return;
+    e.preventDefault();
+
     const r = rendererRef.current;
     if (!r) return;
 
@@ -532,7 +536,8 @@ export default function PlanetStudio() {
                     text-xs text-muted-foreground leading-relaxed noise-overlay
                   "
                 >
-                  Tip: click the planet to place{" "}
+                  Tip: drag with{" "}
+                  <span className="text-foreground font-semibold">left mouse</span> to rotate. Right-click to place{" "}
                   <span className="text-foreground font-semibold">trees</span> on land or{" "}
                   <span className="text-foreground font-semibold">boats</span> on water.
                 </div>
@@ -597,7 +602,7 @@ export default function PlanetStudio() {
                       ref={canvasRef}
                       className="
                         relative h-full w-full
-                        cursor-crosshair
+                        cursor-grab active:cursor-grabbing
                         focus:outline-none
                       "
                       data-testid="webgl-canvas"
