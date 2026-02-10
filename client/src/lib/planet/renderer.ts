@@ -535,7 +535,7 @@ export class PlanetRenderer {
   private view: Mat4 = mat4Identity();
   private proj: Mat4 = mat4Identity();
 
-  private lightDir: Vec3 = normalize([-0.35, -0.75, -0.55]);
+  private lightDir: Vec3 = normalize([-0.6, -0.35, -0.55]);
 
   constructor(canvas: HTMLCanvasElement, settings: PlanetSettings) {
     this.canvas = canvas;
@@ -627,7 +627,7 @@ export class PlanetRenderer {
     try {
       console.log("📦 Fetching models...");
       const [treeRes, boatRes] = await Promise.all([
-        fetch("/models/tree.obj"),
+        fetch("/models/new_tree.obj"),
         fetch("/models/12219_boat_v2_L2.obj")
       ]);
 
@@ -646,6 +646,26 @@ export class PlanetRenderer {
 
       this.treeModel = parseObj(treeText);
       this.boatModel = parseObj(boatText);
+
+      // Normalize tree model: center XZ at origin, base (Y min) at 0, scale to unit cube
+      {
+        const b = this.treeModel.bounds;
+        const cx = (b.min[0] + b.max[0]) / 2;
+        const cy = b.min[1]; // base of trunk at Y=0
+        const cz = (b.min[2] + b.max[2]) / 2;
+        const maxExt = Math.max(
+          b.max[0] - b.min[0],
+          b.max[1] - b.min[1],
+          b.max[2] - b.min[2],
+        );
+        const s = 1.0 / maxExt;
+        const pos = this.treeModel.positions;
+        for (let i = 0; i < pos.length; i += 3) {
+          pos[i]     = (pos[i] - cx) * s;
+          pos[i + 1] = (pos[i + 1] - cy) * s;
+          pos[i + 2] = (pos[i + 2] - cz) * s;
+        }
+      }
 
       // Normalize boat model: center XY at origin, align keel (Z min) to 0, scale to unit cube, rotate Z-up → Y-up
       {
@@ -859,6 +879,7 @@ export class PlanetRenderer {
 
     const count = this.settings.objectCount;
     const maxBoats = 5;
+    const maxTrees = Math.floor(count * 0.45);
     const trees: PlacedObject[] = [];
     const boats: PlacedObject[] = [];
 
@@ -879,7 +900,7 @@ export class PlanetRenderer {
       const bitangent = normalize(cross(normal, tangent));
 
       const kind: ObjectKind = isWater ? "boat" : "tree";
-      const scale = isWater ? randRange(rng, 0.10, 0.15) : randRange(rng, 0.22, 0.34);
+      const scale = isWater ? randRange(rng, 0.10, 0.15) : randRange(rng, 0.06, 0.12);
 
       // position on surface (boat keel is at Y=0 so it sits above naturally; sink slightly for realism)
       const pos = mulScalar(normal, 1.0 + height + (isWater ? -0.005 : 0.01));
@@ -898,7 +919,7 @@ export class PlanetRenderer {
       if (kind === "boat") {
         if (boats.length < maxBoats) boats.push(obj);
       } else {
-        trees.push(obj);
+        if (trees.length < maxTrees) trees.push(obj);
       }
     }
 
@@ -1155,7 +1176,19 @@ export class PlanetRenderer {
         const sway = Math.sin(timeS * 1.6 + o.phase) * 0.015;
         t = normalize(add(o.tangent as Vec3, mulScalar(o.bitangent as Vec3, sway)));
         b = normalize(cross(o.normal as Vec3, t));
-        albedo = [0.18, 0.58, 0.26];
+        // varied foliage colors based on phase
+        const tp = o.phase / (Math.PI * 2); // 0–1
+        if (tp < 0.30) {
+          albedo = [0.13, 0.42, 0.14]; // dark forest
+        } else if (tp < 0.55) {
+          albedo = [0.22, 0.58, 0.20]; // green
+        } else if (tp < 0.75) {
+          albedo = [0.38, 0.62, 0.18]; // light green
+        } else if (tp < 0.88) {
+          albedo = [0.56, 0.58, 0.12]; // yellow-green
+        } else {
+          albedo = [0.68, 0.42, 0.10]; // autumn orange
+        }
       }
 
       const objLocal = this.worldFromBasis(pos, o.normal as Vec3, t, b, o.scale);
@@ -1198,8 +1231,8 @@ export class PlanetRenderer {
 
     // smooth rotation
     if (this.autoRotate) {
-      this.rot += dt * 0.3; // planet spins
-      this.cameraRot += dt * 0.15; // camera orbits
+      this.rot += dt * 0.12; // planet spins
+      this.cameraRot += dt * 0.06; // camera orbits
     }
 
     // fps smoothing
