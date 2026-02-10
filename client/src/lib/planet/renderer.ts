@@ -626,9 +626,10 @@ export class PlanetRenderer {
   private async loadModels(): Promise<boolean> {
     try {
       console.log("📦 Fetching models...");
+      const base = import.meta.env.BASE_URL;
       const [treeRes, boatRes] = await Promise.all([
-        fetch("/models/new_tree.obj"),
-        fetch("/models/12219_boat_v2_L2.obj")
+        fetch(`${base}models/new_tree.obj`),
+        fetch(`${base}models/12219_boat_v2_L2.obj`)
       ]);
 
       if (!treeRes.ok || !boatRes.ok) {
