@@ -187,6 +187,8 @@ export default function PlanetStudio() {
   };
 
   const onCanvasPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 2) return; // only right-click places objects
+    e.preventDefault();
     const r = rendererRef.current;
     if (!r) return;
 
@@ -532,7 +534,7 @@ export default function PlanetStudio() {
                     text-xs text-muted-foreground leading-relaxed noise-overlay
                   "
                 >
-                  Tip: click the planet to place{" "}
+                  Tip: right-click the planet to place{" "}
                   <span className="text-foreground font-semibold">trees</span> on land or{" "}
                   <span className="text-foreground font-semibold">boats</span> on water.
                 </div>
@@ -630,7 +632,7 @@ export default function PlanetStudio() {
                         "
                         data-testid="hud-help"
                       >
-                        Click: <span className="text-foreground">place objects</span> •
+                        Right-click: <span className="text-foreground">place objects</span> •
                         Regenerate: <span className="text-foreground">rebuild mesh</span>
                       </div>
                     </div>
