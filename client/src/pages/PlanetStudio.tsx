@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Helmet } from "@/components/Helmet";
-import { SidebarProvider, Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset } from "@/components/ui/sidebar";
+import { SidebarProvider, Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,7 +15,7 @@ import { NumberPill } from "@/components/NumberPill";
 import { PlanetRenderer } from "@/lib/planet/renderer";
 import { planetSettingsSchema, type NoiseType, type PlanetSettings } from "@shared/schema";
 import { useValidatePlanetSettings } from "@/hooks/use-planet";
-import { RefreshCcw, RotateCw, Sparkles, SunMoon, Triangle, Wand2 } from "lucide-react";
+import { Menu, RefreshCcw, RotateCw, Sparkles, SunMoon, Wand2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_SETTINGS: PlanetSettings = {
@@ -501,36 +501,9 @@ export default function PlanetStudio() {
               </SidebarContent>
 
               <SidebarFooter className="p-5">
-                <div className="grid grid-cols-2 gap-2">
-                  <NumberPill
-                    label="FPS"
-                    value={hud.fps.toFixed(0)}
-                    mono
-                    className="col-span-1"
-                  />
-                  <NumberPill
-                    label="Seed"
-                    value={hud.seed}
-                    mono
-                    className="col-span-1"
-                  />
-                  <NumberPill
-                    label="Triangles"
-                    value={`${hud.triPlanet.toLocaleString()}`}
-                    mono
-                    className="col-span-1"
-                  />
-                  <NumberPill
-                    label="Objects"
-                    value={`${Math.floor(hud.triObjects / 12).toLocaleString()}`}
-                    mono
-                    className="col-span-1"
-                  />
-                </div>
-
                 <div
                   className="
-                    mt-4 rounded-2xl border border-white/10 bg-black/25 p-3
+                    rounded-2xl border border-white/10 bg-black/25 p-3
                     text-xs text-muted-foreground leading-relaxed noise-overlay
                   "
                 >
@@ -545,29 +518,21 @@ export default function PlanetStudio() {
               <main className="relative flex min-h-screen min-w-0 flex-1 flex-col">
                 <div className="px-4 pt-4 sm:px-6 sm:pt-6 lg:px-8 lg:pt-8">
                   <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-                    <div className="animate-float-in">
-                      <h1 className="font-display text-3xl sm:text-4xl text-foreground">
-                        Planet Studio
-                      </h1>
-                      <p className="mt-1 max-w-2xl text-sm sm:text-base text-muted-foreground">
-                        Procedural terrain, shadow mapping, and ray-picked object placement — all in pure WebGL2.
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <div
-                        className={cn(
-                          "inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-1.5 text-xs text-muted-foreground backdrop-blur",
-                        )}
-                        data-testid="hud-triangles"
-                      >
-                        <Triangle className="size-3.5 text-primary" />
-                        <span className="font-mono text-foreground/90">
-                          {hud.triPlanet.toLocaleString()}
-                        </span>
-                        <span>tris</span>
+                    <div className="animate-float-in flex items-center gap-4">
+                      <SidebarTrigger className="-ml-2">
+                        <Menu className="size-5" />
+                      </SidebarTrigger>
+                      <div>
+                        <h1 className="font-display text-3xl sm:text-4xl text-foreground">
+                          Planet Studio
+                        </h1>
+                        <p className="mt-1 max-w-2xl text-sm sm:text-base text-muted-foreground">
+                          Procedural terrain, shadow mapping, and ray-picked object placement — all in pure WebGL2.
+                        </p>
                       </div>
-
+                    </div>
+                    
+                    <div className="flex items-center gap-2">
                       <div
                         className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-1.5 text-xs text-muted-foreground backdrop-blur"
                         data-testid="hud-fps"
@@ -583,7 +548,7 @@ export default function PlanetStudio() {
                 <div className="flex-1 p-4 sm:p-6 lg:p-8">
                   <div
                     className="
-                      relative h-[62vh] min-h-[420px] w-full overflow-hidden
+                      relative h-[85vh] min-h-[600px] w-full overflow-hidden
                       rounded-3xl border border-white/10 bg-black/30
                       shadow-[0_40px_120px_-70px_rgba(0,0,0,0.95)]
                       backdrop-blur-sm noise-overlay

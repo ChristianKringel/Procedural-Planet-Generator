@@ -26,9 +26,8 @@ export default defineConfig({
       "@assets": path.resolve(import.meta.dirname, "attached_assets"),
     },
   },
-  root: import.meta.dirname,
-  base: "/Procedural-Planet-Generator/",
-  publicDir: path.resolve(import.meta.dirname, "client", "public"),
+  root: path.resolve(import.meta.dirname, "client"),
+  base: process.env.NODE_ENV === "production" ? "/Procedural-Planet-Generator/" : "/",
   build: {
     outDir: path.resolve(import.meta.dirname, "docs"),
     emptyOutDir: true,

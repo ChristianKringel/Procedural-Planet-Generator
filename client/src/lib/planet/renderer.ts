@@ -935,8 +935,7 @@ export class PlanetRenderer {
     const x = ((clientX - rect.left) / rect.width) * 2 - 1;
     const y = -(((clientY - rect.top) / rect.height) * 2 - 1);
 
-    // Build inverse of proj*view approximately by unproject at near/far with manual method
-    // We'll generate a ray in view space then rotate by camera orbit (only Y rotation).
+    // Unproject: build ray in view space then transform to world space.
     const aspect = this.canvas.width / this.canvas.height;
     const fovy = (55 * Math.PI) / 180;
     const tan = Math.tan(fovy / 2);
@@ -961,17 +960,32 @@ export class PlanetRenderer {
     // view -> world: dir = s*x + u*y + (-f)*z (since view forward is -Z)
     const dirWorld = normalize(add(add(mulScalar(s, dirView[0]), mulScalar(u, dirView[1])), mulScalar(f, -dirView[2])));
 
-    // First hit with loose bounding sphere
-    const tHit = raySphereIntersect(camPos, dirWorld, 1.25);
-    if (tHit == null) return { hit: false };
+    // Compute tight bounding sphere from actual noiseStrength
+    const maxHeight = 1.75 * this.settings.noiseStrength * 0.10;
+    const rMax = 1.0 + Math.max(maxHeight, 0.05);
+
+    // Get both intersections with bounding sphere
+    const bCoeff = 2 * dot(camPos, dirWorld);
+    const cCoeff = dot(camPos, camPos) - rMax * rMax;
+    const disc = bCoeff * bCoeff - 4 * cCoeff;
+    if (disc < 0) return { hit: false };
+
+    const sqrtDisc = Math.sqrt(disc);
+    const t0 = (-bCoeff - sqrtDisc) / 2;
+    const t1 = (-bCoeff + sqrtDisc) / 2;
+    if (t1 < 0) return { hit: false }; // sphere entirely behind camera
+
+    const tStart = Math.max(t0, 0.001); // if camera is inside sphere, start near camera
+    const tEnd = t1;
 
     // Un-rotate from world space to planet-local space (inverse of mat4RotateY(rot))
+    // Inverse of rotation matrix = transpose, so sin terms are negated vs forward transform.
     const cosR = Math.cos(this.rot);
     const sinR = Math.sin(this.rot);
     const toLocal = (d: Vec3): Vec3 => [
-      d[0] * cosR + d[2] * sinR,
+      d[0] * cosR - d[2] * sinR,
       d[1],
-      -d[0] * sinR + d[2] * cosR,
+      d[0] * sinR + d[2] * cosR,
     ];
 
     const noiseBase = makeNoiseSampler(this.settings.seed, this.settings.noiseType as NoiseType);
@@ -985,21 +999,58 @@ export class PlanetRenderer {
       return (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * this.settings.noiseStrength * 0.10;
     };
 
-    // Iterative refinement: the loose sphere hit gives a rough direction,
-    // then re-intersect with the actual surface radius to correct for parallax.
-    let worldDir = normalize(add(camPos, mulScalar(dirWorld, tHit)));
-    let localDir = toLocal(worldDir);
-    let height = computeHeight(localDir);
+    // Helper: signed distance from the terrain surface at ray parameter t.
+    // Positive = above terrain, negative = inside terrain.
+    const sdfAt = (t: number) => {
+      const p = add(camPos, mulScalar(dirWorld, t));
+      const r = len(p);
+      const dir = normalize(p);
+      const localDir = toLocal(dir);
+      const h = computeHeight(localDir);
+      return r - (1.0 + h);
+    };
 
-    for (let i = 0; i < 3; i++) {
-      const surfaceR = 1.0 + height;
-      const tNew = raySphereIntersect(camPos, dirWorld, surfaceR);
-      if (tNew == null) break;
-      worldDir = normalize(add(camPos, mulScalar(dirWorld, tNew)));
-      localDir = toLocal(worldDir);
-      height = computeHeight(localDir);
+    // Ray march: step along the ray and detect the first sign change
+    // (above terrain → inside terrain). This is precise even at grazing angles.
+    const STEPS = 48;
+    const dt = (tEnd - tStart) / STEPS;
+
+    let prevSdf = sdfAt(tStart);
+    let tCross = -1;
+    let tPrev = tStart;
+
+    for (let i = 1; i <= STEPS; i++) {
+      const t = tStart + dt * i;
+      const curSdf = sdfAt(t);
+
+      if (curSdf <= 0 && prevSdf > 0) {
+        // The ray crossed the surface between tPrev and t
+        tCross = tPrev;
+        break;
+      }
+      prevSdf = curSdf;
+      tPrev = t;
     }
 
+    if (tCross < 0) return { hit: false };
+
+    // Binary search to refine the exact crossing point
+    let tLo = tCross;
+    let tHi = tCross + dt;
+    for (let i = 0; i < 16; i++) {
+      const tMid = (tLo + tHi) / 2;
+      if (sdfAt(tMid) > 0) {
+        tLo = tMid;
+      } else {
+        tHi = tMid;
+      }
+    }
+
+    const tFinal = (tLo + tHi) / 2;
+    const hitPoint = add(camPos, mulScalar(dirWorld, tFinal));
+    const worldDir = normalize(hitPoint);
+    const localDir = toLocal(worldDir);
+    const height = computeHeight(localDir);
     const isWater = height < this.settings.waterThreshold * 0.10;
 
     return {
