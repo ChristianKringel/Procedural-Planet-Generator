@@ -1,4 +1,4 @@
-import type { NoiseType, PickResult, PlanetSettings, PlacedObject, ObjectKind } from "@shared/schema";
+import type { NoiseType, PickResult, PlanetSettings, PlacedObject, ObjectKind, ObjModel } from "@shared/schema";
 import { makeNoiseSampler } from "./noise";
 import { parseObj } from "./obj";
 import { BOAT_OBJ, TREE_OBJ } from "./models";
@@ -103,6 +103,7 @@ precision highp float;
 
 in vec3 a_position;
 in vec3 a_normal;
+in float a_craterMask;
 
 uniform mat4 u_world;
 uniform mat4 u_view;
@@ -113,6 +114,7 @@ out vec3 v_worldPos;
 out vec3 v_worldNormal;
 out vec4 v_lightClip;
 out float v_height;
+out float v_craterMask;
 
 void main() {
   vec4 wp = u_world * vec4(a_position, 1.0);
@@ -120,6 +122,7 @@ void main() {
   v_worldNormal = mat3(u_world) * a_normal;
   v_lightClip = u_lightVP * wp;
   v_height = length(a_position); // height relative to radius 1.0
+  v_craterMask = a_craterMask;
   gl_Position = u_proj * u_view * wp;
 }
 `;
@@ -131,6 +134,7 @@ in vec3 v_worldPos;
 in vec3 v_worldNormal;
 in vec4 v_lightClip;
 in float v_height;
+in float v_craterMask;
 
 uniform vec3 u_lightDir;     // direction towards light (sun)
 uniform vec3 u_cameraPos;
@@ -187,7 +191,20 @@ void main() {
   float landMask = 0.0;
 
   // Gradientes de biomas
-  if (h < threshold) {
+  if (v_craterMask > 0.01) {
+    // CRATERA — rocha exposta / terra queimada
+    float cm = v_craterMask;
+    vec3 outerRock = vec3(0.45, 0.38, 0.32);    // borda: rocha clara
+    vec3 innerRock = vec3(0.35, 0.28, 0.22);    // meio: rocha média
+    vec3 deepCenter = vec3(0.20, 0.14, 0.10);   // fundo: terra escura queimada
+    float rockNoise = hash(v_worldPos * 60.0);
+    vec3 craterColor = mix(outerRock, innerRock, sat(cm * 2.0));
+    craterColor = mix(craterColor, deepCenter, sat(cm * 1.8 - 0.5));
+    // Add some rocky texture variation
+    craterColor *= 0.85 + 0.3 * rockNoise;
+    color = craterColor;
+    landMask = 1.0;
+  } else if (h < threshold) {
     // ÁGUA
     float depth = sat((threshold - h) * 4.0);
     vec3 deepBlue = vec3(0.01, 0.05, 0.15);
@@ -356,6 +373,51 @@ void main() {
 }
 `;
 
+const PARTICLE_VS = `#version 300 es
+precision highp float;
+
+in vec3 a_position;
+in vec4 a_color;
+in float a_size;
+
+uniform mat4 u_view;
+uniform mat4 u_proj;
+uniform float u_screenHeight;
+
+out vec4 v_color;
+
+void main() {
+  v_color = a_color;
+  vec4 viewPos = u_view * vec4(a_position, 1.0);
+  gl_Position = u_proj * viewPos;
+  float dist = length(viewPos.xyz);
+  gl_PointSize = clamp(a_size * u_screenHeight * 0.5 / max(dist, 0.1), 1.0, 300.0);
+}
+`;
+
+const PARTICLE_FS = `#version 300 es
+precision highp float;
+
+in vec4 v_color;
+out vec4 outColor;
+
+void main() {
+  vec2 uv = gl_PointCoord * 2.0 - 1.0;
+  float d = dot(uv, uv);
+  if (d > 1.0) discard;
+  float alpha = v_color.a * smoothstep(1.0, 0.1, d);
+  outColor = vec4(v_color.rgb, alpha);
+}
+`;
+
+function transformVec3(m: Mat4, v: Vec3): Vec3 {
+  return [
+    m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12],
+    m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13],
+    m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14],
+  ];
+}
+
 function sphereMesh(subdiv: number, settings: PlanetSettings) {
   const latSeg = subdiv;
   const lonSeg = subdiv * 2;
@@ -487,6 +549,34 @@ export type RendererStats = {
   seed: string;
 };
 
+interface Crater {
+  localDir: Vec3;
+  radius: number;
+  depth: number;
+  timeCreated: number;
+}
+
+interface MissileState {
+  localDir: Vec3;
+  targetHeight: number;
+  startDist: number;
+  progress: number;
+  duration: number;
+}
+
+interface ImpactParticle {
+  localPos: Vec3;
+  localVel: Vec3;
+  life: number;
+  maxLife: number;
+  size: number;
+  color: [number, number, number, number];
+  growRate: number;
+  isAdditive: boolean;
+}
+
+const MAX_PARTICLES = 2000;
+
 export class PlanetRenderer {
   private canvas: HTMLCanvasElement;
   private gl: GL;
@@ -525,10 +615,14 @@ export class PlanetRenderer {
   private cameraDist = 3.15;
   private autoRotate = true;
   private objectDrawLogged = false;
+  private initialized = false;
 
   private dragging = false;
   private lastPointerX = 0;
   private lastPointerY = 0;
+  private mouseClientX = 0;
+  private mouseClientY = 0;
+  private boundOnKeyDown: ((e: KeyboardEvent) => void) | null = null;
   private cameraElevation = 0.11; // polar angle in radians
 
   private shadowVP: Mat4 = mat4Identity();
@@ -536,6 +630,28 @@ export class PlanetRenderer {
   private proj: Mat4 = mat4Identity();
 
   private lightDir: Vec3 = normalize([-0.6, -0.35, -0.55]);
+
+  // Missile & impact system
+  private craters: Crater[] = [];
+  private missiles: MissileState[] = [];
+  private particles: ImpactParticle[] = [];
+  private particleProg!: WebGLProgram;
+  private particleVao!: WebGLVertexArrayObject;
+  private particlePosBuf!: WebGLBuffer;
+  private particleColorBuf!: WebGLBuffer;
+  private particleSizeBuf!: WebGLBuffer;
+  private particlePosData = new Float32Array(MAX_PARTICLES * 3);
+  private particleColorData = new Float32Array(MAX_PARTICLES * 4);
+  private particleSizeData = new Float32Array(MAX_PARTICLES);
+
+  // Planet mesh data (for crater deformation)
+  private planetPositions!: Float32Array;
+  private planetNormals!: Float32Array;
+  private planetCraterMask!: Float32Array;
+  private planetIndices!: Uint32Array;
+  private planetPosBuf!: WebGLBuffer;
+  private planetNorBuf!: WebGLBuffer;
+  private planetCraterMaskBuf!: WebGLBuffer;
 
   constructor(canvas: HTMLCanvasElement, settings: PlanetSettings) {
     this.canvas = canvas;
@@ -554,6 +670,7 @@ export class PlanetRenderer {
     this.planetProg = createProgram(gl, PLANET_VS, PLANET_FS);
     this.shadowProg = createProgram(gl, SHADOW_VS, SHADOW_FS);
     this.objProg = createProgram(gl, OBJ_VS, OBJ_FS);
+    this.particleProg = createProgram(gl, PARTICLE_VS, PARTICLE_FS);
 
     this.shadow = createShadowTarget(gl, 2048);
 
@@ -561,6 +678,7 @@ export class PlanetRenderer {
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
 
+    this.initParticleBuffers();
     this.resize();
     this.loop = this.loop.bind(this);
     this.setupEventListeners();
@@ -579,6 +697,34 @@ export class PlanetRenderer {
     this.canvas.addEventListener('pointerup', this.onPointerUp.bind(this));
     this.canvas.addEventListener('pointerleave', this.onPointerUp.bind(this));
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    // Track mouse position over canvas
+    this.canvas.addEventListener('mousemove', this.onMouseMove.bind(this));
+    // Listen for M key to launch missile
+    this.boundOnKeyDown = this.onKeyDown.bind(this);
+    window.addEventListener('keydown', this.boundOnKeyDown);
+  }
+
+  private onMouseMove(e: MouseEvent) {
+    this.mouseClientX = e.clientX;
+    this.mouseClientY = e.clientY;
+  }
+
+  private onKeyDown(e: KeyboardEvent) {
+    if (e.key === 'm' || e.key === 'M') {
+      console.log('[MISSILE] M key pressed! mouseX:', this.mouseClientX, 'mouseY:', this.mouseClientY, 'initialized:', this.initialized);
+      if (!this.initialized) {
+        console.log('[MISSILE] ⏳ Renderer not initialized yet');
+        return;
+      }
+      const pick = this.pick(this.mouseClientX, this.mouseClientY);
+      console.log('[MISSILE] 🎯 Pick result:', { hit: pick.hit, localDir: pick.localDir, height: pick.height, isWater: pick.isWater });
+      if (pick.hit) {
+        this.launchMissile(pick);
+        console.log('[MISSILE] 🚀 Missile launched! Total missiles:', this.missiles.length);
+      } else {
+        console.log('[MISSILE] ❌ Pick missed planet - aim cursor at the planet!');
+      }
+    }
   }
 
   private onWheel(e: WheelEvent) {
@@ -620,6 +766,7 @@ export class PlanetRenderer {
     this.initObjects();
     this.rebuildPlanet();
     this.redistributeObjects();
+    this.initialized = true;
     console.log("✅ Renderer initialization complete");
   }
 
@@ -713,7 +860,10 @@ export class PlanetRenderer {
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
-    // Note: bound listeners from setupEventListeners are GC'd with the canvas
+    if (this.boundOnKeyDown) {
+      window.removeEventListener('keydown', this.boundOnKeyDown);
+      this.boundOnKeyDown = null;
+    }
   }
 
   setSettings(next: PlanetSettings, opts?: { rebuild?: boolean; redistribute?: boolean }) {
@@ -828,19 +978,57 @@ export class PlanetRenderer {
       this.planetVao = undefined;
     }
 
-    const vaoInfo = createVao(
-      gl,
-      this.planetProg,
-      [
-        { name: "a_position", size: 3, data: mesh.positions },
-        { name: "a_normal", size: 3, data: mesh.normals },
-      ],
-      mesh.indices,
-    );
+    // Store mesh data for crater deformation
+    this.planetPositions = new Float32Array(mesh.positions);
+    this.planetNormals = new Float32Array(mesh.normals);
+    this.planetCraterMask = new Float32Array(mesh.positions.length / 3); // one float per vertex, starts at 0
+    this.planetIndices = new Uint32Array(mesh.indices);
 
-    this.planetVao = vaoInfo.vao;
+    // Create VAO with DYNAMIC_DRAW buffers for position/normal updates
+    const vao = gl.createVertexArray()!;
+    gl.bindVertexArray(vao);
+
+    this.planetPosBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.planetPosBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, this.planetPositions, gl.DYNAMIC_DRAW);
+    const posLoc = gl.getAttribLocation(this.planetProg, 'a_position');
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+    this.planetNorBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.planetNorBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, this.planetNormals, gl.DYNAMIC_DRAW);
+    const norLoc = gl.getAttribLocation(this.planetProg, 'a_normal');
+    gl.enableVertexAttribArray(norLoc);
+    gl.vertexAttribPointer(norLoc, 3, gl.FLOAT, false, 0, 0);
+
+    this.planetCraterMaskBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.planetCraterMaskBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, this.planetCraterMask, gl.DYNAMIC_DRAW);
+    const craterLoc = gl.getAttribLocation(this.planetProg, 'a_craterMask');
+    if (craterLoc >= 0) {
+      gl.enableVertexAttribArray(craterLoc);
+      gl.vertexAttribPointer(craterLoc, 1, gl.FLOAT, false, 0, 0);
+    }
+
+    const ibo = gl.createBuffer()!;
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.planetIndices, gl.STATIC_DRAW);
+
+    gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+    this.planetVao = vao;
     this.planetIndexCount = mesh.indices.length;
     this.planetTriCount = mesh.triCount;
+
+    // Re-apply existing craters after rebuilding
+    for (const crater of this.craters) {
+      this.applyCraterToMesh(crater);
+    }
+    if (this.craters.length > 0) {
+      this.uploadPlanetBuffers();
+    }
   }
 
   private worldFromBasis(pos: Vec3, n: Vec3, t: Vec3, b: Vec3, scale: number): Mat4 {
@@ -1094,6 +1282,470 @@ export class PlanetRenderer {
     ];
   }
 
+  // ─── Missile & Impact System ───────────────────────────────────────────
+
+  launchMissile(pick: PickResult) {
+    if (!pick.hit || !pick.localDir || pick.height == null) return;
+
+    const localDir = normalize(pick.localDir);
+    const targetHeight = pick.height;
+    const startDist = 1.0 + targetHeight + 1.8; // start well above surface
+
+    this.missiles.push({
+      localDir,
+      targetHeight,
+      startDist,
+      progress: 0,
+      duration: 1.2,
+    });
+  }
+
+  private initParticleBuffers() {
+    const gl = this.gl;
+
+    this.particleVao = gl.createVertexArray()!;
+    gl.bindVertexArray(this.particleVao);
+
+    // Position buffer
+    this.particlePosBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.particlePosBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, MAX_PARTICLES * 3 * 4, gl.DYNAMIC_DRAW);
+    const posLoc = gl.getAttribLocation(this.particleProg, 'a_position');
+    if (posLoc >= 0) {
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+    }
+
+    // Color buffer
+    this.particleColorBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.particleColorBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, MAX_PARTICLES * 4 * 4, gl.DYNAMIC_DRAW);
+    const colorLoc = gl.getAttribLocation(this.particleProg, 'a_color');
+    if (colorLoc >= 0) {
+      gl.enableVertexAttribArray(colorLoc);
+      gl.vertexAttribPointer(colorLoc, 4, gl.FLOAT, false, 0, 0);
+    }
+
+    // Size buffer
+    this.particleSizeBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.particleSizeBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, MAX_PARTICLES * 4, gl.DYNAMIC_DRAW);
+    const sizeLoc = gl.getAttribLocation(this.particleProg, 'a_size');
+    if (sizeLoc >= 0) {
+      gl.enableVertexAttribArray(sizeLoc);
+      gl.vertexAttribPointer(sizeLoc, 1, gl.FLOAT, false, 0, 0);
+    }
+
+    gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  private applyCraterToMesh(crater: Crater) {
+    const { localDir, radius, depth } = crater;
+    const cosR = Math.cos(radius);
+    const pos = this.planetPositions;
+    const mask = this.planetCraterMask;
+
+    for (let i = 0; i < pos.length; i += 3) {
+      const px = pos[i], py = pos[i + 1], pz = pos[i + 2];
+      const r = Math.sqrt(px * px + py * py + pz * pz);
+      if (r < 0.001) continue;
+
+      const dx = px / r, dy = py / r, dz = pz / r;
+      const d = dx * localDir[0] + dy * localDir[1] + dz * localDir[2];
+      if (d < cosR) continue;
+
+      const angDist = Math.acos(Math.min(1, d));
+      const t = angDist / radius;
+
+      let displacement: number;
+      let craterIntensity: number;
+      if (t < 0.7) {
+        // Bowl interior: smooth cosine depression
+        displacement = -depth * (Math.cos((t / 0.7) * Math.PI) * 0.5 + 0.5);
+        craterIntensity = 1.0 - t / 0.7; // 1.0 at center, 0.0 at bowl edge
+      } else {
+        // Raised rim
+        const rimT = (t - 0.7) / 0.3;
+        displacement = depth * 0.2 * Math.sin(rimT * Math.PI);
+        craterIntensity = 0.3 * Math.sin(rimT * Math.PI); // slight marking on rim
+      }
+
+      const newR = r + displacement;
+      pos[i] = dx * newR;
+      pos[i + 1] = dy * newR;
+      pos[i + 2] = dz * newR;
+
+      // Update crater mask (take max so overlapping craters work)
+      const vi = i / 3;
+      mask[vi] = Math.max(mask[vi], craterIntensity);
+    }
+
+    this.recomputeNormals();
+  }
+
+  private recomputeNormals() {
+    const pos = this.planetPositions;
+    const idx = this.planetIndices;
+    const nor = this.planetNormals;
+
+    nor.fill(0);
+
+    for (let i = 0; i < idx.length; i += 3) {
+      const i0 = idx[i] * 3, i1 = idx[i + 1] * 3, i2 = idx[i + 2] * 3;
+
+      const ax = pos[i1] - pos[i0], ay = pos[i1 + 1] - pos[i0 + 1], az = pos[i1 + 2] - pos[i0 + 2];
+      const bx = pos[i2] - pos[i0], by = pos[i2 + 1] - pos[i0 + 1], bz = pos[i2 + 2] - pos[i0 + 2];
+
+      const nx = ay * bz - az * by;
+      const ny = az * bx - ax * bz;
+      const nz = ax * by - ay * bx;
+
+      nor[i0] += nx; nor[i0 + 1] += ny; nor[i0 + 2] += nz;
+      nor[i1] += nx; nor[i1 + 1] += ny; nor[i1 + 2] += nz;
+      nor[i2] += nx; nor[i2 + 1] += ny; nor[i2 + 2] += nz;
+    }
+
+    for (let i = 0; i < nor.length; i += 3) {
+      const l = Math.sqrt(nor[i] * nor[i] + nor[i + 1] * nor[i + 1] + nor[i + 2] * nor[i + 2]);
+      if (l > 0) { nor[i] /= l; nor[i + 1] /= l; nor[i + 2] /= l; }
+    }
+  }
+
+  private uploadPlanetBuffers() {
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.planetPosBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.planetPositions);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.planetNorBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.planetNormals);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.planetCraterMaskBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.planetCraterMask);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  private removeObjectsNearCrater(localDir: Vec3, radius: number) {
+    const cosR = Math.cos(radius * 1.5);
+    this.placed = this.placed.filter(obj => {
+      const p = obj.position as Vec3;
+      const r = len(p);
+      if (r < 0.001) return true;
+      const n: Vec3 = [p[0] / r, p[1] / r, p[2] / r];
+      return dot(n, localDir) < cosR;
+    });
+  }
+
+  private spawnImpactParticles(localDir: Vec3, _timeS: number) {
+    const tangent = anyPerpendicular(localDir);
+    const bitangent = normalize(cross(localDir, tangent));
+
+    // Compute surface position from noise
+    const noiseBase = makeNoiseSampler(this.settings.seed, this.settings.noiseType as NoiseType);
+    const noiseDetail = makeNoiseSampler(this.settings.seed + "_detail", this.settings.noiseType as NoiseType);
+    const noiseMicro = makeNoiseSampler(this.settings.seed + "_micro", this.settings.noiseType as NoiseType);
+
+    const n1 = noiseBase(localDir[0], localDir[1], localDir[2]);
+    const n2 = noiseDetail(localDir[0] * 3.0, localDir[1] * 3.0, localDir[2] * 3.0);
+    const n3 = noiseMicro(localDir[0] * 8.0, localDir[1] * 8.0, localDir[2] * 8.0);
+    const height = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * this.settings.noiseStrength * 0.10;
+
+    const surfacePos = mulScalar(localDir, 1.0 + height);
+    const rng = mulberry32(hashStringToUint(`impact-${Date.now()}`));
+
+    // Fire particles (bright, additive glow)
+    for (let i = 0; i < 45; i++) {
+      const angle = rng() * Math.PI * 2;
+      const speed = 0.04 + rng() * 0.12;
+      const upSpeed = 0.02 + rng() * 0.08;
+      const dir = add(
+        add(mulScalar(tangent, Math.cos(angle) * speed), mulScalar(bitangent, Math.sin(angle) * speed)),
+        mulScalar(localDir, upSpeed)
+      );
+
+      const life = 1.5 + rng() * 2.5;
+      const r = 0.9 + rng() * 0.1;
+      const g = 0.3 + rng() * 0.5;
+      const b = rng() * 0.1;
+
+      this.particles.push({
+        localPos: [...surfacePos] as Vec3,
+        localVel: dir,
+        life,
+        maxLife: life,
+        size: 0.02 + rng() * 0.03,
+        color: [r, g, b, 1.0],
+        growRate: -0.4,
+        isAdditive: true,
+      });
+    }
+
+    // Smoke particles (gray, slow, expanding)
+    for (let i = 0; i < 30; i++) {
+      const angle = rng() * Math.PI * 2;
+      const speed = 0.008 + rng() * 0.025;
+      const upSpeed = 0.025 + rng() * 0.05;
+      const dir = add(
+        add(mulScalar(tangent, Math.cos(angle) * speed), mulScalar(bitangent, Math.sin(angle) * speed)),
+        mulScalar(localDir, upSpeed)
+      );
+
+      const life = 3.5 + rng() * 3.5;
+      const gray = 0.35 + rng() * 0.35;
+
+      this.particles.push({
+        localPos: [...surfacePos] as Vec3,
+        localVel: dir,
+        life,
+        maxLife: life,
+        size: 0.012 + rng() * 0.018,
+        color: [gray, gray, gray * 0.9, 0.5],
+        growRate: 0.6,
+        isAdditive: false,
+      });
+    }
+
+    // Debris particles (brown/dark, fast, short-lived)
+    for (let i = 0; i < 20; i++) {
+      const angle = rng() * Math.PI * 2;
+      const speed = 0.1 + rng() * 0.2;
+      const upSpeed = 0.08 + rng() * 0.15;
+      const dir = add(
+        add(mulScalar(tangent, Math.cos(angle) * speed), mulScalar(bitangent, Math.sin(angle) * speed)),
+        mulScalar(localDir, upSpeed)
+      );
+
+      const life = 0.6 + rng() * 0.8;
+      const r = 0.3 + rng() * 0.25;
+      const g = 0.18 + rng() * 0.12;
+
+      this.particles.push({
+        localPos: [...surfacePos] as Vec3,
+        localVel: dir,
+        life,
+        maxLife: life,
+        size: 0.006 + rng() * 0.012,
+        color: [r, g, 0.05, 1.0],
+        growRate: -0.5,
+        isAdditive: true,
+      });
+    }
+
+    // Shockwave ring particles (bright flash ring)
+    for (let i = 0; i < 20; i++) {
+      const angle = (i / 20) * Math.PI * 2;
+      const speed = 0.2 + rng() * 0.05;
+      const dir = add(
+        mulScalar(tangent, Math.cos(angle) * speed),
+        mulScalar(bitangent, Math.sin(angle) * speed)
+      );
+
+      this.particles.push({
+        localPos: [...surfacePos] as Vec3,
+        localVel: dir,
+        life: 0.4,
+        maxLife: 0.4,
+        size: 0.015 + rng() * 0.01,
+        color: [1.0, 0.9, 0.5, 1.0],
+        growRate: -2.0,
+        isAdditive: true,
+      });
+    }
+  }
+
+  private updateMissiles(dt: number, timeS: number) {
+    for (let i = this.missiles.length - 1; i >= 0; i--) {
+      const m = this.missiles[i];
+      m.progress += dt / m.duration;
+
+      // Spawn trail particles during flight
+      if (m.progress < 1.0 && Math.random() < 0.4) {
+        const dist = m.startDist + (1.0 + m.targetHeight - m.startDist) * m.progress;
+        const trailPos = mulScalar(m.localDir, dist);
+        this.particles.push({
+          localPos: [...trailPos] as Vec3,
+          localVel: mulScalar(m.localDir, -0.01),
+          life: 0.3 + Math.random() * 0.2,
+          maxLife: 0.5,
+          size: 0.008 + Math.random() * 0.005,
+          color: [1.0, 0.6, 0.1, 0.7],
+          growRate: -1.0,
+          isAdditive: true,
+        });
+      }
+
+      if (m.progress >= 1.0) {
+        // IMPACT!
+        const craterRadius = 0.12;
+        const craterDepth = 0.025;
+
+        const crater: Crater = {
+          localDir: m.localDir,
+          radius: craterRadius,
+          depth: craterDepth,
+          timeCreated: timeS,
+        };
+        this.craters.push(crater);
+        this.applyCraterToMesh(crater);
+        this.uploadPlanetBuffers();
+
+        // Remove objects near crater
+        this.removeObjectsNearCrater(m.localDir, craterRadius);
+
+        // Spawn explosion particles
+        this.spawnImpactParticles(m.localDir, timeS);
+
+        this.missiles.splice(i, 1);
+      }
+    }
+  }
+
+  private updateParticles(dt: number) {
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const p = this.particles[i];
+      p.life -= dt;
+
+      if (p.life <= 0) {
+        this.particles.splice(i, 1);
+        continue;
+      }
+
+      // Update position
+      p.localPos = add(p.localPos, mulScalar(p.localVel, dt));
+
+      // Dampen velocity (drag)
+      p.localVel = mulScalar(p.localVel, Math.max(0, 1 - dt * 1.8));
+
+      // Gravity toward planet center for debris
+      const r = len(p.localPos);
+      if (r > 0.01) {
+        const gravity = mulScalar(normalize(p.localPos), -dt * 0.04);
+        p.localVel = add(p.localVel, gravity);
+      }
+
+      // Update size based on grow rate
+      if (p.growRate > 0) {
+        p.size += p.growRate * dt * 0.01;
+      } else {
+        p.size = Math.max(0.001, p.size + p.growRate * dt * p.size);
+      }
+
+      // Fade alpha over lifetime
+      const lifeRatio = p.life / p.maxLife;
+      p.color[3] = lifeRatio * (p.isAdditive ? 0.9 : 0.4);
+    }
+
+    // Cap total particles
+    if (this.particles.length > MAX_PARTICLES) {
+      this.particles.splice(0, this.particles.length - MAX_PARTICLES);
+    }
+  }
+
+  private renderParticles(timeS: number) {
+    const gl = this.gl;
+    const totalCount = this.particles.length + this.missiles.length;
+    if (totalCount === 0) return;
+
+    const planetRot = mat4RotateY(this.rot);
+
+    const positions = this.particlePosData;
+    const colors = this.particleColorData;
+    const sizes = this.particleSizeData;
+
+    // Separate into additive and non-additive counts
+    let additiveStart = 0;
+    let idx = 0;
+
+    // First: non-additive particles (smoke) with regular alpha blending
+    for (const p of this.particles) {
+      if (p.isAdditive) continue;
+      const wp = transformVec3(planetRot, p.localPos);
+      positions[idx * 3] = wp[0];
+      positions[idx * 3 + 1] = wp[1];
+      positions[idx * 3 + 2] = wp[2];
+      colors[idx * 4] = p.color[0];
+      colors[idx * 4 + 1] = p.color[1];
+      colors[idx * 4 + 2] = p.color[2];
+      colors[idx * 4 + 3] = p.color[3];
+      sizes[idx] = p.size;
+      idx++;
+    }
+    additiveStart = idx;
+
+    // Then: missiles (additive glow)
+    for (const m of this.missiles) {
+      const dist = m.startDist + (1.0 + m.targetHeight - m.startDist) * m.progress;
+      const localPos = mulScalar(m.localDir, dist);
+      const wp = transformVec3(planetRot, localPos);
+      positions[idx * 3] = wp[0];
+      positions[idx * 3 + 1] = wp[1];
+      positions[idx * 3 + 2] = wp[2];
+      const intensity = 0.8 + Math.sin(timeS * 20) * 0.2;
+      colors[idx * 4] = 1.0 * intensity;
+      colors[idx * 4 + 1] = 0.7 * intensity;
+      colors[idx * 4 + 2] = 0.2 * intensity;
+      colors[idx * 4 + 3] = 1.0;
+      sizes[idx] = 0.05 + 0.025 * (1.0 - m.progress);
+      idx++;
+    }
+
+    // Then: additive particles (fire, debris, shockwave)
+    for (const p of this.particles) {
+      if (!p.isAdditive) continue;
+      const wp = transformVec3(planetRot, p.localPos);
+      positions[idx * 3] = wp[0];
+      positions[idx * 3 + 1] = wp[1];
+      positions[idx * 3 + 2] = wp[2];
+      colors[idx * 4] = p.color[0];
+      colors[idx * 4 + 1] = p.color[1];
+      colors[idx * 4 + 2] = p.color[2];
+      colors[idx * 4 + 3] = p.color[3];
+      sizes[idx] = p.size;
+      idx++;
+    }
+
+    const totalReal = idx;
+    if (totalReal === 0) return;
+
+    // Upload buffers
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.particlePosBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, positions.subarray(0, totalReal * 3));
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.particleColorBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, colors.subarray(0, totalReal * 4));
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.particleSizeBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, sizes.subarray(0, totalReal));
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+    // Setup render state
+    gl.useProgram(this.particleProg);
+    gl.bindVertexArray(this.particleVao);
+
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.particleProg, 'u_view'), false, this.view);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.particleProg, 'u_proj'), false, this.proj);
+    gl.uniform1f(gl.getUniformLocation(this.particleProg, 'u_screenHeight'), this.canvas.height);
+
+    gl.depthMask(false);
+    gl.disable(gl.CULL_FACE);
+    gl.enable(gl.BLEND);
+
+    // Pass 1: non-additive (smoke) with regular alpha blending
+    if (additiveStart > 0) {
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.drawArrays(gl.POINTS, 0, additiveStart);
+    }
+
+    // Pass 2: additive (fire, debris, missiles, shockwave)
+    if (totalReal > additiveStart) {
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+      gl.drawArrays(gl.POINTS, additiveStart, totalReal - additiveStart);
+    }
+
+    // Restore state
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+    gl.bindVertexArray(null);
+  }
+
   private renderShadowPass(timeS: number) {
     const gl = this.gl;
     this.computeLightVP();
@@ -1306,6 +1958,10 @@ export class PlanetRenderer {
 
     const timeS = t / 1000;
 
+    // Update missile & particle systems
+    this.updateMissiles(dt, timeS);
+    this.updateParticles(dt);
+
     this.resize();
 
     // render shadow then main
@@ -1313,6 +1969,7 @@ export class PlanetRenderer {
     else this.computeLightVP(); // still compute matrix for shading; map still used but ignored
 
     this.renderMainPass(timeS);
+    this.renderParticles(timeS);
 
     this.raf = requestAnimationFrame(this.loop);
   }

@@ -510,6 +510,8 @@ export default function PlanetStudio() {
                   Tip: right-click the planet to place{" "}
                   <span className="text-foreground font-semibold">trees</span> on land or{" "}
                   <span className="text-foreground font-semibold">boats</span> on water.
+                  Press <span className="text-foreground font-semibold">M</span> to launch a{" "}
+                  <span className="text-foreground font-semibold">missile</span> that creates craters!
                 </div>
               </SidebarFooter>
             </Sidebar>
@@ -598,6 +600,7 @@ export default function PlanetStudio() {
                         data-testid="hud-help"
                       >
                         Right-click: <span className="text-foreground">place objects</span> •
+                        M key: <span className="text-foreground">launch missile</span> •
                         Regenerate: <span className="text-foreground">rebuild mesh</span>
                       </div>
                     </div>
