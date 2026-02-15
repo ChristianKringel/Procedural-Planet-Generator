@@ -21,6 +21,7 @@ export interface PickResult {
   localDir?: [number, number, number];
   height?: number;
   isWater?: boolean;
+  isSnow?: boolean;
 }
 
 export interface ObjModel {
@@ -34,7 +35,7 @@ export interface ObjModel {
   };
 }
 
-export type ObjectKind = "tree" | "boat";
+export type ObjectKind = "tree" | "boat" | "snow_tree";
 
 export interface PlacedObject {
   id: string;

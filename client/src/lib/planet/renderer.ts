@@ -610,12 +610,15 @@ export class PlanetRenderer {
 
   private treeModel?: ObjModel;
   private boatModel?: ObjModel;
+  private snowTreeModel?: ObjModel;
 
   private treeVao?: WebGLVertexArrayObject;
   private boatVao?: WebGLVertexArrayObject;
+  private snowTreeVao?: WebGLVertexArrayObject;
 
   private treeIndexCount = 0;
   private boatIndexCount = 0;
+  private snowTreeIndexCount = 0;
 
   private settings: PlanetSettings;
 
@@ -791,26 +794,30 @@ export class PlanetRenderer {
     try {
       console.log("📦 Fetching models...");
       const base = import.meta.env.BASE_URL;
-      const [treeRes, boatRes] = await Promise.all([
+      const [treeRes, boatRes, snowTreeRes] = await Promise.all([
         fetch(`${base}models/new_tree.obj`),
-        fetch(`${base}models/12219_boat_v2_L2.obj`)
+        fetch(`${base}models/12219_boat_v2_L2.obj`),
+        fetch(`${base}models/snow_tree.obj`)
       ]);
 
-      if (!treeRes.ok || !boatRes.ok) {
+      if (!treeRes.ok || !boatRes.ok || !snowTreeRes.ok) {
         console.error("❌ Failed to fetch models:", {
           tree: treeRes.status,
-          boat: boatRes.status
+          boat: boatRes.status,
+          snow_tree: snowTreeRes.status
         });
         return false;
       }
 
-      const [treeText, boatText] = await Promise.all([
+      const [treeText, boatText, snowTreeText] = await Promise.all([
         treeRes.text(),
-        boatRes.text()
+        boatRes.text(),
+        snowTreeRes.text()
       ]);
 
       this.treeModel = parseObj(treeText);
       this.boatModel = parseObj(boatText);
+      this.snowTreeModel = parseObj(snowTreeText);
 
       // Normalize tree model: center XZ at origin, base (Y min) at 0, scale to unit cube
       {
@@ -825,6 +832,26 @@ export class PlanetRenderer {
         );
         const s = 1.0 / maxExt;
         const pos = this.treeModel.positions;
+        for (let i = 0; i < pos.length; i += 3) {
+          pos[i]     = (pos[i] - cx) * s;
+          pos[i + 1] = (pos[i + 1] - cy) * s;
+          pos[i + 2] = (pos[i + 2] - cz) * s;
+        }
+      }
+
+      // Normalize snow tree model: center XZ at origin, base (Y min) at 0, scale to unit cube
+      {
+        const b = this.snowTreeModel.bounds;
+        const cx = (b.min[0] + b.max[0]) / 2;
+        const cy = b.min[1]; // base of trunk at Y=0
+        const cz = (b.min[2] + b.max[2]) / 2;
+        const maxExt = Math.max(
+          b.max[0] - b.min[0],
+          b.max[1] - b.min[1],
+          b.max[2] - b.min[2],
+        );
+        const s = 1.0 / maxExt;
+        const pos = this.snowTreeModel.positions;
         for (let i = 0; i < pos.length; i += 3) {
           pos[i]     = (pos[i] - cx) * s;
           pos[i + 1] = (pos[i + 1] - cy) * s;
@@ -865,7 +892,8 @@ export class PlanetRenderer {
 
       console.log("✅ Models loaded:", {
         tree: `${this.treeModel.positions.length / 3} verts, ${this.treeModel.indices.length / 3} tris`,
-        boat: `${this.boatModel.positions.length / 3} verts, ${this.boatModel.indices.length / 3} tris`
+        boat: `${this.boatModel.positions.length / 3} verts, ${this.boatModel.indices.length / 3} tris`,
+        snow_tree: `${this.snowTreeModel.positions.length / 3} verts, ${this.snowTreeModel.indices.length / 3} tris`
       });
       return true;
     } catch (e) {
@@ -938,10 +966,11 @@ export class PlanetRenderer {
 
   private initObjects() {
     const gl = this.gl;
-    if (!this.treeModel || !this.boatModel) {
+    if (!this.treeModel || !this.boatModel || !this.snowTreeModel) {
       console.warn("⚠️ Cannot init objects: models not loaded", {
         treeModel: !!this.treeModel,
-        boatModel: !!this.boatModel
+        boatModel: !!this.boatModel,
+        snowTreeModel: !!this.snowTreeModel
       });
       return;
     }
@@ -950,7 +979,9 @@ export class PlanetRenderer {
       treeVerts: this.treeModel.positions.length / 3,
       treeTris: this.treeModel.indices.length / 3,
       boatVerts: this.boatModel.positions.length / 3,
-      boatTris: this.boatModel.indices.length / 3
+      boatTris: this.boatModel.indices.length / 3,
+      snowTreeVerts: this.snowTreeModel.positions.length / 3,
+      snowTreeTris: this.snowTreeModel.indices.length / 3
     });
 
     // tree
@@ -983,6 +1014,22 @@ export class PlanetRenderer {
       this.boatVao = vaoInfo.vao;
       this.boatIndexCount = this.boatModel.indices.length;
       console.log("✓ Boat VAO created, indices:", this.boatIndexCount);
+    }
+
+    // snow_tree
+    {
+      const vaoInfo = createVao(
+        gl,
+        this.objProg,
+        [
+          { name: "a_position", size: 3, data: this.snowTreeModel.positions },
+          { name: "a_normal", size: 3, data: this.snowTreeModel.normals },
+        ],
+        this.snowTreeModel.indices,
+      );
+      this.snowTreeVao = vaoInfo.vao;
+      this.snowTreeIndexCount = this.snowTreeModel.indices.length;
+      console.log("✓ Snow Tree VAO created, indices:", this.snowTreeIndexCount);
     }
   }
 
@@ -1088,6 +1135,7 @@ export class PlanetRenderer {
     const maxBoats = 5;
     const maxTrees = Math.floor(count * 0.45);
     const trees: PlacedObject[] = [];
+    const snowTrees: PlacedObject[] = [];
     const boats: PlacedObject[] = [];
 
     for (let i = 0; i < count; i++) {
@@ -1101,12 +1149,21 @@ export class PlanetRenderer {
       const n3 = noiseMicro(base[0] * 8.0, base[1] * 8.0, base[2] * 8.0);
       const height = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * this.settings.noiseStrength * 0.10;
       const isWater = height < this.settings.waterThreshold * 0.10;
+      const isSnow = (height * 10.0) >= 0.8; // Snow starts at h=0.8 in normalized range
 
       const normal = normalize(base);
       const tangent = anyPerpendicular(normal);
       const bitangent = normalize(cross(normal, tangent));
 
-      const kind: ObjectKind = isWater ? "boat" : "tree";
+      let kind: ObjectKind;
+      if (isWater) {
+        kind = "boat";
+      } else if (isSnow) {
+        kind = "snow_tree";
+      } else {
+        kind = "tree";
+      }
+
       const scale = isWater ? randRange(rng, 0.10, 0.15) : randRange(rng, 0.06, 0.12);
 
       const pos = mulScalar(normal, 1.0 + height + (isWater ? -0.003 : 0.0));
@@ -1124,14 +1181,17 @@ export class PlanetRenderer {
 
       if (kind === "boat") {
         if (boats.length < maxBoats) boats.push(obj);
+      } else if (kind === "snow_tree") {
+        if (snowTrees.length < maxTrees) snowTrees.push(obj);
       } else {
         if (trees.length < maxTrees) trees.push(obj);
       }
     }
 
-    this.placed = [...trees, ...boats];
+    this.placed = [...trees, ...snowTrees, ...boats];
     console.log(`✓ Redistributed ${this.placed.length} objects:`, {
       trees: trees.length,
+      snow_trees: snowTrees.length,
       boats: boats.length
     });
   }
@@ -1258,6 +1318,7 @@ export class PlanetRenderer {
     const localDir = toLocal(worldDir);
     const height = computeHeight(localDir);
     const isWater = height < this.settings.waterThreshold * 0.10;
+    const isSnow = (height * 10.0) >= 0.8; // Snow starts at h=0.8 in normalized range
 
     return {
       hit: true,
@@ -1266,6 +1327,7 @@ export class PlanetRenderer {
       localDir,
       height,
       isWater,
+      isSnow,
     };
   }
 
@@ -1275,7 +1337,16 @@ export class PlanetRenderer {
       return;
     }
 
-    const kind: ObjectKind = pick.isWater ? "boat" : "tree";
+    // Determine object kind: boat for water, snow_tree for snow, tree for everything else
+    let kind: ObjectKind;
+    if (pick.isWater) {
+      kind = "boat";
+    } else if (pick.isSnow) {
+      kind = "snow_tree";
+    } else {
+      kind = "tree";
+    }
+
     const rng = mulberry32(hashStringToUint(this.settings.seed + "_place") ^ (this.placed.length * 2654435761));
     const scale = kind === "boat" ? randRange(rng, 0.10, 0.15) : randRange(rng, 0.06, 0.12);
 
@@ -1912,6 +1983,10 @@ export class PlanetRenderer {
         if (!this.treeVao) return;
         gl.bindVertexArray(this.treeVao);
         gl.drawElements(gl.TRIANGLES, this.treeIndexCount, gl.UNSIGNED_INT, 0);
+      } else if (o.kind === "snow_tree") {
+        if (!this.snowTreeVao) return;
+        gl.bindVertexArray(this.snowTreeVao);
+        gl.drawElements(gl.TRIANGLES, this.snowTreeIndexCount, gl.UNSIGNED_INT, 0);
       } else {
         if (!this.boatVao) return;
         gl.bindVertexArray(this.boatVao);
@@ -2002,7 +2077,8 @@ export class PlanetRenderer {
           position: o.position,
           posLength: len(o.position as Vec3),
           hasTreeVao: !!this.treeVao,
-          hasBoatVao: !!this.boatVao
+          hasBoatVao: !!this.boatVao,
+          hasSnowTreeVao: !!this.snowTreeVao
         });
       }
       let pos = o.position as Vec3;
@@ -2014,6 +2090,20 @@ export class PlanetRenderer {
         const bob = Math.sin(timeS * 1.8 + o.phase) * 0.005;
         pos = add(pos, mulScalar(o.normal as Vec3, bob));
         albedo = [0.12, 0.62, 0.78];
+      } else if (o.kind === "snow_tree") {
+        // snow tree with tiny sway
+        const sway = Math.sin(timeS * 1.6 + o.phase) * 0.015;
+        t = normalize(add(o.tangent as Vec3, mulScalar(o.bitangent as Vec3, sway)));
+        b = normalize(cross(o.normal as Vec3, t));
+        // Snow tree colors - white to light blue tones
+        const tp = o.phase / (Math.PI * 2); // 0–1
+        if (tp < 0.33) {
+          albedo = [0.85, 0.90, 0.95]; // white-blue
+        } else if (tp < 0.66) {
+          albedo = [0.90, 0.92, 0.95]; // bright white
+        } else {
+          albedo = [0.80, 0.85, 0.90]; // light blue-gray
+        }
       } else {
         // tree with tiny sway
         const sway = Math.sin(timeS * 1.6 + o.phase) * 0.015;
@@ -2046,6 +2136,13 @@ export class PlanetRenderer {
         }
         gl.bindVertexArray(this.treeVao);
         gl.drawElements(gl.TRIANGLES, this.treeIndexCount, gl.UNSIGNED_INT, 0);
+      } else if (o.kind === "snow_tree") {
+        if (!this.snowTreeVao) {
+          if (drawnCount === 1) console.log("❌ Snow Tree VAO missing!");
+          return;
+        }
+        gl.bindVertexArray(this.snowTreeVao);
+        gl.drawElements(gl.TRIANGLES, this.snowTreeIndexCount, gl.UNSIGNED_INT, 0);
       } else {
         if (!this.boatVao) {
           if (drawnCount === 1) console.log("❌ Boat VAO missing!");
