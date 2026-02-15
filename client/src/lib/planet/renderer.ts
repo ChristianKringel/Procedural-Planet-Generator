@@ -156,23 +156,32 @@ float hash(vec3 p) {
     return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
 }
 
-float sampleShadow(vec4 lightClip) {
+float sampleShadow(vec4 lightClip, vec3 normal, vec3 lightDir, float craterMask) {
   vec3 proj = lightClip.xyz / lightClip.w;
   vec2 uv = proj.xy * 0.5 + 0.5;
   float current = proj.z * 0.5 + 0.5;
 
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
 
+  // Adaptive bias based on surface angle to light
+  float cosTheta = sat(dot(normal, -lightDir));
+  float bias = 0.0015 * tan(acos(cosTheta));
+  bias = clamp(bias, 0.0005, 0.003);
+  
+  // Extra bias for crater areas to prevent excessive self-shadowing
+  // Craters are depressions and shouldn't be completely dark
+  bias += craterMask * 0.008;
+
   float shadow = 0.0;
   vec2 texel = 1.0 / vec2(textureSize(u_shadowMap, 0));
-  float bias = 0.001;
-  for (int y = -2; y <= 2; y++) {
-    for (int x = -2; x <= 2; x++) {
+  // Reduced PCF kernel from 5x5 to 3x3 for tighter shadows
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
       float depth = texture(u_shadowMap, uv + vec2(float(x), float(y)) * texel).r;
       shadow += (current - bias) <= depth ? 1.0 : 0.0;
     }
   }
-  return shadow / 25.0;
+  return shadow / 9.0;
 }
 
 void main() {
@@ -247,14 +256,15 @@ void main() {
   }
 
   if (u_shadowsEnabled) {
-    float shadow = sampleShadow(v_lightClip);
+    float shadow = sampleShadow(v_lightClip, N, u_lightDir, v_craterMask);
 
     // Specular (less pronounced than water)
     vec3 H = normalize(L + V);
     float spec = pow(sat(dot(N, H)), 40.0) * 0.2 * landMask;
 
     // Shadow only affects direct lighting, ambient is always preserved
-    vec3 col = color * (0.2 + 0.8 * ndl * shadow);
+    // Increased ambient from 0.2 to 0.3 for softer shadows
+    vec3 col = color * (0.3 + 0.7 * ndl * shadow);
     col += spec * vec3(1.0) * shadow;
     col += rim * vec3(0.4, 0.6, 1.0) * 0.15; // Atmosfera
 
@@ -331,21 +341,27 @@ out vec4 outColor;
 
 float sat(float x){ return clamp(x, 0.0, 1.0); }
 
-float sampleShadow(vec4 lightClip) {
+float sampleShadow(vec4 lightClip, vec3 normal, vec3 lightDir) {
   vec3 proj = lightClip.xyz / lightClip.w;
   vec2 uv = proj.xy * 0.5 + 0.5;
   float current = proj.z * 0.5 + 0.5;
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
+
+  // Adaptive bias based on surface angle to light
+  float cosTheta = clamp(dot(normal, -lightDir), 0.0, 1.0);
+  float bias = 0.0015 * tan(acos(cosTheta));
+  bias = clamp(bias, 0.0005, 0.003);
+
   vec2 texel = 1.0 / vec2(textureSize(u_shadowMap, 0));
-  float bias = 0.001;
   float shadow = 0.0;
-  for (int y=-2; y<=2; y++){
-    for (int x=-2; x<=2; x++){
+  // Reduced PCF kernel from 5x5 to 3x3
+  for (int y=-1; y<=1; y++){
+    for (int x=-1; x<=1; x++){
       float depth = texture(u_shadowMap, uv + vec2(float(x), float(y)) * texel).r;
       shadow += (current - bias) <= depth ? 1.0 : 0.0;
     }
   }
-  return shadow / 25.0;
+  return shadow / 9.0;
 }
 
 void main() {
@@ -356,12 +372,13 @@ void main() {
   float ndl = sat(dot(N, L));
 
   if (u_shadowsEnabled) {
-    float shadow = sampleShadow(v_lightClip);
+    float shadow = sampleShadow(v_lightClip, N, u_lightDir);
     vec3 H = normalize(L + V);
     float spec = pow(sat(dot(N, H)), 80.0);
 
     // Shadow only affects direct lighting, ambient is always preserved
-    vec3 col = u_albedo * (0.25 + 0.75 * ndl * shadow);
+    // Increased ambient from 0.25 to 0.35 for softer shadows
+    vec3 col = u_albedo * (0.35 + 0.65 * ndl * shadow);
     col += spec * vec3(0.9, 1.0, 1.0) * 0.25 * shadow;
 
     outColor = vec4(col, 1.0);
@@ -1048,15 +1065,16 @@ export class PlanetRenderer {
   }
 
   private computeLightVP() {
-    // directional light: ortho tightly around planet
+    // directional light: ortho focused tightly on planet only
     const lightPos: Vec3 = mulScalar(this.lightDir, -7.5);
     const center: Vec3 = [0, 0, 0];
     const up: Vec3 = [0, 1, 0];
 
     const lightView = mat4LookAt(lightPos, center, up);
-    // Tight frustum: planet radius ~1.15, so ±1.5 covers it with margin.
+    // Tighter frustum: planet radius ~1.15, ±1.25 focuses on planet surface
+    // This prevents distant objects from casting shadows across the planet
     // Near/far: light at 7.5, planet surface at ~6.3–8.7 from light.
-    const lightProj = mat4Ortho(-1.5, 1.5, -1.5, 1.5, 5.5, 10.0);
+    const lightProj = mat4Ortho(-1.25, 1.25, -1.25, 1.25, 6.0, 9.5);
     this.shadowVP = mat4Mul(lightProj, lightView);
   }
 
@@ -1345,6 +1363,7 @@ export class PlanetRenderer {
     const cosR = Math.cos(radius);
     const pos = this.planetPositions;
     const mask = this.planetCraterMask;
+    const dirtyVertices = new Set<number>();
 
     for (let i = 0; i < pos.length; i += 3) {
       const px = pos[i], py = pos[i + 1], pz = pos[i + 2];
@@ -1379,20 +1398,58 @@ export class PlanetRenderer {
       // Update crater mask (take max so overlapping craters work)
       const vi = i / 3;
       mask[vi] = Math.max(mask[vi], craterIntensity);
+      dirtyVertices.add(vi);
     }
 
-    this.recomputeNormals();
+    // Only recompute normals for vertices affected by this crater,
+    // preserving the original analytic normals for the rest of the planet.
+    this.recomputeNormalsPartial(dirtyVertices);
   }
 
-  private recomputeNormals() {
+  /**
+   * Recompute normals ONLY for the given set of vertex indices.
+   * Non-dirty vertices keep their original normals (analytic finite-difference
+   * normals from sphereMesh), preventing a global shading shift when a crater
+   * is first created.
+   */
+  /**
+   * Recompute normals for affected vertices and their neighbors to ensure
+   * smooth shading transitions at crater boundaries.
+   */
+  private recomputeNormalsPartial(dirtyVerts: Set<number>) {
+    if (dirtyVerts.size === 0) return;
+
     const pos = this.planetPositions;
     const idx = this.planetIndices;
     const nor = this.planetNormals;
 
-    nor.fill(0);
-
+    // Expand dirty set to include all vertices that share triangles with
+    // dirty vertices, ensuring smooth shading at crater boundaries
+    const expandedDirty = new Set<number>(dirtyVerts);
     for (let i = 0; i < idx.length; i += 3) {
-      const i0 = idx[i] * 3, i1 = idx[i + 1] * 3, i2 = idx[i + 2] * 3;
+      const a = idx[i], b = idx[i + 1], c = idx[i + 2];
+      if (dirtyVerts.has(a) || dirtyVerts.has(b) || dirtyVerts.has(c)) {
+        expandedDirty.add(a);
+        expandedDirty.add(b);
+        expandedDirty.add(c);
+      }
+    }
+
+    // Zero out normals for all expanded dirty vertices
+    expandedDirty.forEach(vi => {
+      const i = vi * 3;
+      nor[i] = 0;
+      nor[i + 1] = 0;
+      nor[i + 2] = 0;
+    });
+
+    // Accumulate face normals from every triangle that touches any dirty vertex
+    for (let i = 0; i < idx.length; i += 3) {
+      const a = idx[i], b = idx[i + 1], c = idx[i + 2];
+      const aD = expandedDirty.has(a), bD = expandedDirty.has(b), cD = expandedDirty.has(c);
+      if (!aD && !bD && !cD) continue;
+
+      const i0 = a * 3, i1 = b * 3, i2 = c * 3;
 
       const ax = pos[i1] - pos[i0], ay = pos[i1 + 1] - pos[i0 + 1], az = pos[i1 + 2] - pos[i0 + 2];
       const bx = pos[i2] - pos[i0], by = pos[i2 + 1] - pos[i0 + 1], bz = pos[i2 + 2] - pos[i0 + 2];
@@ -1401,26 +1458,68 @@ export class PlanetRenderer {
       const ny = az * bx - ax * bz;
       const nz = ax * by - ay * bx;
 
-      nor[i0] += nx; nor[i0 + 1] += ny; nor[i0 + 2] += nz;
-      nor[i1] += nx; nor[i1 + 1] += ny; nor[i1 + 2] += nz;
-      nor[i2] += nx; nor[i2 + 1] += ny; nor[i2 + 2] += nz;
+      if (aD) { nor[i0] += nx; nor[i0 + 1] += ny; nor[i0 + 2] += nz; }
+      if (bD) { nor[i1] += nx; nor[i1 + 1] += ny; nor[i1 + 2] += nz; }
+      if (cD) { nor[i2] += nx; nor[i2 + 1] += ny; nor[i2 + 2] += nz; }
     }
 
-    for (let i = 0; i < nor.length; i += 3) {
+    // Re-normalize all expanded dirty vertices
+    expandedDirty.forEach(vi => {
+      const i = vi * 3;
       const l = Math.sqrt(nor[i] * nor[i] + nor[i + 1] * nor[i + 1] + nor[i + 2] * nor[i + 2]);
-      if (l > 0) { nor[i] /= l; nor[i + 1] /= l; nor[i + 2] /= l; }
-    }
+      if (l > 0.0001) { 
+        nor[i] /= l; 
+        nor[i + 1] /= l; 
+        nor[i + 2] /= l; 
+      } else {
+        // Fallback to radial direction if normal is degenerate
+        const px = pos[i], py = pos[i + 1], pz = pos[i + 2];
+        const r = Math.sqrt(px * px + py * py + pz * pz);
+        if (r > 0.0001) {
+          nor[i] = px / r;
+          nor[i + 1] = py / r;
+          nor[i + 2] = pz / r;
+        } else {
+          // Ultimate fallback (should never happen)
+          nor[i] = 0;
+          nor[i + 1] = 1;
+          nor[i + 2] = 0;
+        }
+      }
+    });
   }
 
   private uploadPlanetBuffers() {
     const gl = this.gl;
+    
+    // Save current VAO state to prevent corruption
+    const prevVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING);
+    
+    // Unbind any active VAO before updating buffers
+    gl.bindVertexArray(null);
+    
+    // Update planet buffers
     gl.bindBuffer(gl.ARRAY_BUFFER, this.planetPosBuf);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.planetPositions);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.planetNorBuf);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.planetNormals);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.planetCraterMaskBuf);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.planetCraterMask);
+    
+    // Clean up state
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+    
+    // Force WebGL to recognize the buffer updates by briefly binding the planet VAO
+    if (this.planetVao) {
+      gl.bindVertexArray(this.planetVao);
+      gl.bindVertexArray(null);
+    }
+    
+    // Restore previous VAO if any
+    if (prevVao && prevVao !== this.planetVao) {
+      gl.bindVertexArray(prevVao as WebGLVertexArrayObject);
+    }
   }
 
   private removeObjectsNearCrater(localDir: Vec3, radius: number) {
@@ -1750,19 +1849,38 @@ export class PlanetRenderer {
     const gl = this.gl;
     this.computeLightVP();
 
+    // Unbind shadow texture from TEXTURE0 before binding shadow FBO to
+    // prevent a rendering feedback loop (same texture attached to FBO and
+    // bound for sampling). ANGLE on Windows may produce undefined results.
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+
+    // Ensure completely clean GL state
+    gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+    
+    // Reset render state
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LESS);
+    gl.enable(gl.CULL_FACE);
+
+    // Bind shadow framebuffer and clear
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadow.fb);
     gl.viewport(0, 0, this.shadow.size, this.shadow.size);
-    gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.colorMask(false, false, false, false);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
 
     gl.useProgram(this.shadowProg);
 
     const uWorld = gl.getUniformLocation(this.shadowProg, "u_world");
     const uLightVP = gl.getUniformLocation(this.shadowProg, "u_lightVP");
 
-    // Hardware polygon offset bias — more precise than shader-only bias
+    // Hardware polygon offset bias — reduced for less aggressive shadowing
     gl.enable(gl.POLYGON_OFFSET_FILL);
-    gl.polygonOffset(1.5, 2.0);
+    gl.polygonOffset(0.5, 1.0);
 
     // planet — cull front faces so shadow map stores back-face depth (natural bias)
     gl.cullFace(gl.FRONT);
@@ -1813,6 +1931,14 @@ export class PlanetRenderer {
 
   private renderMainPass(timeS: number) {
     const gl = this.gl;
+
+    // Ensure clean state for main pass (shadow pass may leave colorMask off)
+    gl.colorMask(true, true, true, true);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+    gl.disable(gl.BLEND);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
@@ -1937,6 +2063,11 @@ export class PlanetRenderer {
     }
 
     gl.bindVertexArray(null);
+
+    // Unbind shadow texture so it's not bound when next frame's shadow pass
+    // binds the shadow FBO (prevents texture feedback loop)
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, null);
   }
 
   private loop() {
