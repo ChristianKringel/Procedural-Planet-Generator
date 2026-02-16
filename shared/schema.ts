@@ -9,8 +9,7 @@ export const planetSettingsSchema = z.object({
   noiseStrength: z.number().min(0).max(5),
   noiseType: z.union([z.literal("perlin"), z.literal("simplex"), z.literal("random")]),
   objectCount: z.number().int().min(0).max(2000),
-  shadowsEnabled: z.boolean(),
-});
+  shadowsEnabled: z.boolean(),  missileDuration: z.number().min(0.3).max(5.0).default(1.2),});
 
 export type PlanetSettings = z.infer<typeof planetSettingsSchema>;
 

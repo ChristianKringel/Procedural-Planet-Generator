@@ -693,14 +693,17 @@ export class PlanetRenderer {
   private treeModel?: ObjModel;
   private boatModel?: ObjModel;
   private snowTreeModel?: ObjModel;
+  private rocketModel?: ObjModel;
 
   private treeVao?: WebGLVertexArrayObject;
   private boatVao?: WebGLVertexArrayObject;
   private snowTreeVao?: WebGLVertexArrayObject;
+  private rocketVao?: WebGLVertexArrayObject;
 
   private treeIndexCount = 0;
   private boatIndexCount = 0;
   private snowTreeIndexCount = 0;
+  private rocketIndexCount = 0;
 
   private settings: PlanetSettings;
 
@@ -876,28 +879,32 @@ export class PlanetRenderer {
     try {
       console.log("📦 Fetching models...");
       const base = import.meta.env.BASE_URL;
-      const [treeRes, boatRes, snowTreeRes] = await Promise.all([
+      const [treeRes, boatRes, snowTreeRes, rocketRes] = await Promise.all([
         fetch(`${base}models/new_tree.obj`),
         fetch(`${base}models/12219_boat_v2_L2.obj`),
-        fetch(`${base}models/snow_tree.obj`)
+        fetch(`${base}models/snow_tree.obj`),
+        fetch(`${base}models/rocket.obj`)
       ]);
 
-      if (!treeRes.ok || !boatRes.ok || !snowTreeRes.ok) {
+      if (!treeRes.ok || !boatRes.ok || !snowTreeRes.ok || !rocketRes.ok) {
         console.error("❌ Failed to fetch models:", {
           tree: treeRes.status,
           boat: boatRes.status,
-          snow_tree: snowTreeRes.status
+          snow_tree: snowTreeRes.status,
+          rocket: rocketRes.status
         });
         return false;
       }
 
-      const [treeText, boatText, snowTreeText] = await Promise.all([
+      const [treeText, boatText, snowTreeText, rocketText] = await Promise.all([
         treeRes.text(),
         boatRes.text(),
-        snowTreeRes.text()
+        snowTreeRes.text(),
+        rocketRes.text()
       ]);
 
       this.treeModel = parseObj(treeText);
+      this.rocketModel = parseObj(rocketText);
       this.boatModel = parseObj(boatText);
       this.snowTreeModel = parseObj(snowTreeText);
 
@@ -972,10 +979,45 @@ export class PlanetRenderer {
         }
       }
 
+      // Normalize rocket model: rotate to point forward, center at origin, scale to unit size
+      {
+        const b = this.rocketModel.bounds;
+        const cx = (b.min[0] + b.max[0]) / 2;
+        const cy = (b.min[1] + b.max[1]) / 2;
+        const cz = (b.min[2] + b.max[2]) / 2;
+        const maxExt = Math.max(
+          b.max[0] - b.min[0],
+          b.max[1] - b.min[1],
+          b.max[2] - b.min[2],
+        );
+        const s = 1.0 / maxExt;
+        const pos = this.rocketModel.positions;
+        // Original rocket points in -Y direction (nose down)
+        // We want it to point in +Y (nose up) for easier orientation
+        // Rotate 180° around X: (x, y, z) → (x, -y, -z), then center and scale
+        for (let i = 0; i < pos.length; i += 3) {
+          const x = (pos[i] - cx) * s;
+          const y = (pos[i + 1] - cy) * s;
+          const z = (pos[i + 2] - cz) * s;
+          // Rotate 180° around X to flip Y and Z
+          pos[i]     = x;
+          pos[i + 1] = -y;
+          pos[i + 2] = -z;
+        }
+        const nor = this.rocketModel.normals;
+        for (let i = 0; i < nor.length; i += 3) {
+          const ny = nor[i + 1];
+          const nz = nor[i + 2];
+          nor[i + 1] = -ny;
+          nor[i + 2] = -nz;
+        }
+      }
+
       console.log("✅ Models loaded:", {
         tree: `${this.treeModel.positions.length / 3} verts, ${this.treeModel.indices.length / 3} tris`,
         boat: `${this.boatModel.positions.length / 3} verts, ${this.boatModel.indices.length / 3} tris`,
-        snow_tree: `${this.snowTreeModel.positions.length / 3} verts, ${this.snowTreeModel.indices.length / 3} tris`
+        snow_tree: `${this.snowTreeModel.positions.length / 3} verts, ${this.snowTreeModel.indices.length / 3} tris`,
+        rocket: `${this.rocketModel.positions.length / 3} verts, ${this.rocketModel.indices.length / 3} tris`
       });
       return true;
     } catch (e) {
@@ -1048,11 +1090,12 @@ export class PlanetRenderer {
 
   private initObjects() {
     const gl = this.gl;
-    if (!this.treeModel || !this.boatModel || !this.snowTreeModel) {
+    if (!this.treeModel || !this.boatModel || !this.snowTreeModel || !this.rocketModel) {
       console.warn("⚠️ Cannot init objects: models not loaded", {
         treeModel: !!this.treeModel,
         boatModel: !!this.boatModel,
-        snowTreeModel: !!this.snowTreeModel
+        snowTreeModel: !!this.snowTreeModel,
+        rocketModel: !!this.rocketModel
       });
       return;
     }
@@ -1063,7 +1106,9 @@ export class PlanetRenderer {
       boatVerts: this.boatModel.positions.length / 3,
       boatTris: this.boatModel.indices.length / 3,
       snowTreeVerts: this.snowTreeModel.positions.length / 3,
-      snowTreeTris: this.snowTreeModel.indices.length / 3
+      snowTreeTris: this.snowTreeModel.indices.length / 3,
+      rocketVerts: this.rocketModel.positions.length / 3,
+      rocketTris: this.rocketModel.indices.length / 3
     });
 
     // tree
@@ -1112,6 +1157,22 @@ export class PlanetRenderer {
       this.snowTreeVao = vaoInfo.vao;
       this.snowTreeIndexCount = this.snowTreeModel.indices.length;
       console.log("✓ Snow Tree VAO created, indices:", this.snowTreeIndexCount);
+    }
+
+    // rocket
+    {
+      const vaoInfo = createVao(
+        gl,
+        this.objProg,
+        [
+          { name: "a_position", size: 3, data: this.rocketModel.positions },
+          { name: "a_normal", size: 3, data: this.rocketModel.normals },
+        ],
+        this.rocketModel.indices,
+      );
+      this.rocketVao = vaoInfo.vao;
+      this.rocketIndexCount = this.rocketModel.indices.length;
+      console.log("✓ Rocket VAO created, indices:", this.rocketIndexCount);
     }
   }
 
@@ -1467,7 +1528,7 @@ export class PlanetRenderer {
       targetHeight,
       startDist,
       progress: 0,
-      duration: 1.2,
+      duration: this.settings.missileDuration || 1.2,
     });
   }
 
@@ -1893,7 +1954,7 @@ export class PlanetRenderer {
 
   private renderParticles(timeS: number) {
     const gl = this.gl;
-    const totalCount = this.particles.length + this.missiles.length;
+    const totalCount = this.particles.length;
     if (totalCount === 0) return;
 
     const planetRot = mat4RotateY(this.rot);
@@ -1921,23 +1982,6 @@ export class PlanetRenderer {
       idx++;
     }
     additiveStart = idx;
-
-    // Then: missiles (additive glow)
-    for (const m of this.missiles) {
-      const dist = m.startDist + (1.0 + m.targetHeight - m.startDist) * m.progress;
-      const localPos = mulScalar(m.localDir, dist);
-      const wp = transformVec3(planetRot, localPos);
-      positions[idx * 3] = wp[0];
-      positions[idx * 3 + 1] = wp[1];
-      positions[idx * 3 + 2] = wp[2];
-      const intensity = 0.8 + Math.sin(timeS * 20) * 0.2;
-      colors[idx * 4] = 1.0 * intensity;
-      colors[idx * 4 + 1] = 0.7 * intensity;
-      colors[idx * 4 + 2] = 0.2 * intensity;
-      colors[idx * 4 + 3] = 1.0;
-      sizes[idx] = 0.05 + 0.025 * (1.0 - m.progress);
-      idx++;
-    }
 
     // Then: additive particles (fire, debris, shockwave)
     for (const p of this.particles) {
@@ -1995,6 +2039,111 @@ export class PlanetRenderer {
     gl.depthMask(true);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
+    gl.bindVertexArray(null);
+  }
+
+  private renderMissiles(timeS: number) {
+    const gl = this.gl;
+    if (this.missiles.length === 0 || !this.rocketVao) return;
+
+    const planetRot = mat4RotateY(this.rot);
+
+    gl.useProgram(this.objProg);
+    gl.bindVertexArray(this.rocketVao);
+
+    const uWorld = gl.getUniformLocation(this.objProg, "u_world");
+    const uView = gl.getUniformLocation(this.objProg, "u_view");
+    const uProj = gl.getUniformLocation(this.objProg, "u_proj");
+    const uNormal = gl.getUniformLocation(this.objProg, "u_normal");
+    const uLightDir = gl.getUniformLocation(this.objProg, "u_lightDir");
+    const uCameraPos = gl.getUniformLocation(this.objProg, "u_cameraPos");
+    const uLightVP = gl.getUniformLocation(this.objProg, "u_lightVP");
+    const uAlbedo = gl.getUniformLocation(this.objProg, "u_albedo");
+    const uAlbedo2 = gl.getUniformLocation(this.objProg, "u_albedo2");
+    const uAlbedo3 = gl.getUniformLocation(this.objProg, "u_albedo3");
+    const uIsBoat = gl.getUniformLocation(this.objProg, "u_isBoat");
+    const uShadowsEnabled = gl.getUniformLocation(this.objProg, "u_shadowsEnabled");
+
+    gl.uniformMatrix4fv(uView, false, this.view);
+    gl.uniformMatrix4fv(uProj, false, this.proj);
+    gl.uniformMatrix4fv(uLightVP, false, this.shadowVP);
+    gl.uniform3fv(uLightDir, this.lightDir);
+    gl.uniform1i(uShadowsEnabled, this.settings.shadowsEnabled ? 1 : 0);
+    gl.uniform1f(uIsBoat, 0.0); // Not a boat
+    
+    // Camera position
+    const cosElev = Math.cos(this.cameraElevation);
+    const sinElev = Math.sin(this.cameraElevation);
+    const camPos: Vec3 = [
+      Math.sin(this.cameraRot) * cosElev * this.cameraDist,
+      sinElev * this.cameraDist,
+      Math.cos(this.cameraRot) * cosElev * this.cameraDist,
+    ];
+    gl.uniform3fv(uCameraPos, camPos);
+
+    // Bind shadow map
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.shadow.depthTex);
+    gl.uniform1i(gl.getUniformLocation(this.objProg, "u_shadowMap"), 0);
+
+    // Rocket colors (corpo cinza escuro, cone branco, detalhes amarelo/dourado)
+    const bodyColor: Vec3 = [0.35, 0.35, 0.36]; // cinza escuro metálico
+    const coneColor: Vec3 = [0.9, 0.9, 0.92]; // branco
+    const detailColor: Vec3 = [0.95, 0.75, 0.1]; // amarelo dourado
+    
+    gl.uniform3fv(uAlbedo, bodyColor);
+    gl.uniform3fv(uAlbedo2, coneColor);
+    gl.uniform3fv(uAlbedo3, detailColor);
+
+    // Render each missile
+    for (const m of this.missiles) {
+      const dist = m.startDist + (1.0 + m.targetHeight - m.startDist) * m.progress;
+      const localPos = mulScalar(m.localDir, dist);
+
+      // Direction vector pointing down toward surface (inward toward planet center)
+      // Rocket's Y-axis (tip after 180° normalization) should point this way
+      const direction = normalize(m.localDir); // Points toward center (down)
+
+      // Build orientation matrix: rocket's Y-axis (tip) points along direction
+      const yAxis = direction;  // Rocket's local Y (tip direction)
+      const xAxis = anyPerpendicular(yAxis);  // Rocket's local X
+      const zAxis = normalize(cross(xAxis, yAxis));  // Rocket's local Z
+
+      // Scale the rocket
+      const scale = 0.08;
+
+      // World matrix: orientation + position + scale
+      // Columns are the basis vectors scaled
+      const rocketLocal = mat4Identity();
+      // Column 0: X-axis
+      rocketLocal[0] = xAxis[0] * scale;
+      rocketLocal[1] = xAxis[1] * scale;
+      rocketLocal[2] = xAxis[2] * scale;
+      // Column 1: Y-axis (rocket tip direction)
+      rocketLocal[4] = yAxis[0] * scale;
+      rocketLocal[5] = yAxis[1] * scale;
+      rocketLocal[6] = yAxis[2] * scale;
+      // Column 2: Z-axis
+      rocketLocal[8] = zAxis[0] * scale;
+      rocketLocal[9] = zAxis[1] * scale;
+      rocketLocal[10] = zAxis[2] * scale;
+      // Column 3: position
+      rocketLocal[12] = localPos[0];
+      rocketLocal[13] = localPos[1];
+      rocketLocal[14] = localPos[2];
+
+      const world = mat4Mul(planetRot, rocketLocal);
+
+      gl.uniformMatrix4fv(uWorld, false, world);
+      gl.uniformMatrix3fv(uNormal, false, [
+        world[0], world[1], world[2],
+        world[4], world[5], world[6],
+        world[8], world[9], world[10]
+      ]);
+
+      gl.drawElements(gl.TRIANGLES, this.rocketIndexCount, gl.UNSIGNED_INT, 0);
+    }
+
     gl.bindVertexArray(null);
   }
 
@@ -2315,6 +2464,7 @@ export class PlanetRenderer {
     else this.computeLightVP(); // still compute matrix for shading; map still used but ignored
 
     this.renderMainPass(timeS);
+    this.renderMissiles(timeS);
     this.renderParticles(timeS);
 
     this.raf = requestAnimationFrame(this.loop);

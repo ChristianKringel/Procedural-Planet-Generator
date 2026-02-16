@@ -15,7 +15,7 @@ import { NumberPill } from "@/components/NumberPill";
 import { PlanetRenderer } from "@/lib/planet/renderer";
 import { planetSettingsSchema, type NoiseType, type PlanetSettings } from "@shared/schema";
 import { useValidatePlanetSettings } from "@/hooks/use-planet";
-import { Menu, RefreshCcw, RotateCw, Sparkles, SunMoon, Wand2 } from "lucide-react";
+import { Menu, RefreshCcw, Rocket, RotateCw, Sparkles, SunMoon, Wand2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_SETTINGS: PlanetSettings = {
@@ -26,6 +26,7 @@ const DEFAULT_SETTINGS: PlanetSettings = {
   noiseType: "simplex",
   objectCount: 420,
   shadowsEnabled: true,
+  missileDuration: 1.2,
 };
 
 function useDebouncedValue<T>(value: T, delayMs: number) {
@@ -138,7 +139,7 @@ export default function PlanetStudio() {
       rebuild: false,
       redistribute: false,
     });
-  }, [debouncedLive.shadowsEnabled, debouncedLive.noiseStrength, debouncedLive.waterThreshold]);
+  }, [debouncedLive.shadowsEnabled, debouncedLive.noiseStrength, debouncedLive.waterThreshold, debouncedLive.missileDuration]);
 
   const onRegenerate = async () => {
     const local = planetSettingsSchema.safeParse(settings);
@@ -419,6 +420,32 @@ export default function PlanetStudio() {
                           Toggle shadows
                         </GlowButton>
                       </div>
+                    </ControlGroup>
+
+                    <ControlGroup
+                      title="Missile Duration"
+                      description="Control how fast missiles travel when launched with 'M' key."
+                      right={
+                        <div className="flex items-center gap-2">
+                          <Rocket className="size-4 text-primary" />
+                          <NumberPill
+                            value={settings.missileDuration.toFixed(1)}
+                            unit="s"
+                            data-testid="missile-duration-display"
+                          />
+                        </div>
+                      }
+                    >
+                      <Slider
+                        data-testid="missile-duration-slider"
+                        value={[settings.missileDuration]}
+                        min={0.3}
+                        max={5.0}
+                        step={0.1}
+                        onValueChange={(v) =>
+                          setSettings((s) => ({ ...s, missileDuration: v[0] ?? s.missileDuration }))
+                        }
+                      />
                     </ControlGroup>
 
                     <ControlGroup
