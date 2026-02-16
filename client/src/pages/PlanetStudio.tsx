@@ -24,6 +24,8 @@ const DEFAULT_SETTINGS: PlanetSettings = {
   waterThreshold: 0.0,
   noiseStrength: 1.5,
   noiseType: "simplex",
+  reliefAggressiveness: 1.0,
+  rotationSpeed: 1.0,
   objectCount: 420,
   shadowsEnabled: true,
   missileDuration: 1.2,
@@ -61,13 +63,14 @@ export default function PlanetStudio() {
   }, [debouncedLive.seed, debouncedLive.subdivisions, debouncedLive.noiseType]);
 
   const redistributeKey = useMemo(() => {
-    return `${debouncedLive.objectCount}|${debouncedLive.seed}|${debouncedLive.noiseType}|${debouncedLive.noiseStrength}|${debouncedLive.waterThreshold}`;
+    return `${debouncedLive.objectCount}|${debouncedLive.seed}|${debouncedLive.noiseType}|${debouncedLive.noiseStrength}|${debouncedLive.waterThreshold}|${debouncedLive.reliefAggressiveness}`;
   }, [
     debouncedLive.objectCount,
     debouncedLive.seed,
     debouncedLive.noiseType,
     debouncedLive.noiseStrength,
     debouncedLive.waterThreshold,
+    debouncedLive.reliefAggressiveness,
   ]);
 
   useEffect(() => {
@@ -139,7 +142,7 @@ export default function PlanetStudio() {
       rebuild: false,
       redistribute: false,
     });
-  }, [debouncedLive.shadowsEnabled, debouncedLive.noiseStrength, debouncedLive.waterThreshold, debouncedLive.missileDuration]);
+  }, [debouncedLive.shadowsEnabled, debouncedLive.noiseStrength, debouncedLive.waterThreshold, debouncedLive.missileDuration, debouncedLive.rotationSpeed]);
 
   const onRegenerate = async () => {
     const local = planetSettingsSchema.safeParse(settings);
@@ -352,6 +355,31 @@ export default function PlanetStudio() {
                     </ControlGroup>
 
                     <ControlGroup
+                      title="Relief Aggressiveness"
+                      description="Controls peaks and mountains intensity. Higher = more dramatic terrain."
+                      right={
+                        <div className="text-xs font-semibold text-foreground">
+                          {settings.reliefAggressiveness.toFixed(2)}×
+                        </div>
+                      }
+                    >
+                      <Slider
+                        data-testid="relief-slider"
+                        value={[settings.reliefAggressiveness]}
+                        min={0}
+                        max={2}
+                        step={0.01}
+                        onValueChange={(v) =>
+                          setSettings((s) => ({ ...s, reliefAggressiveness: v[0] ?? s.reliefAggressiveness }))
+                        }
+                      />
+                      <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+                        <span>Flat</span>
+                        <span>Extreme</span>
+                      </div>
+                    </ControlGroup>
+
+                    <ControlGroup
                       title="Water vs Land"
                       description="Adjust the threshold where the terrain becomes ocean."
                       right={
@@ -472,6 +500,36 @@ export default function PlanetStudio() {
                           <RotateCw className="size-4" />
                           {autoRotate ? "Stop rotation" : "Start rotation"}
                         </GlowButton>
+                      </div>
+                    </ControlGroup>
+
+                    <ControlGroup
+                      title="Rotation Speed"
+                      description="Control how fast the planet rotates when auto-rotation is enabled."
+                      right={
+                        <div className="flex items-center gap-2">
+                          <RotateCw className="size-4 text-primary" />
+                          <NumberPill
+                            value={settings.rotationSpeed.toFixed(1)}
+                            unit="×"
+                            data-testid="rotation-speed-display"
+                          />
+                        </div>
+                      }
+                    >
+                      <Slider
+                        data-testid="rotation-speed-slider"
+                        value={[settings.rotationSpeed]}
+                        min={0}
+                        max={3}
+                        step={0.1}
+                        onValueChange={(v) =>
+                          setSettings((s) => ({ ...s, rotationSpeed: v[0] ?? s.rotationSpeed }))
+                        }
+                      />
+                      <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+                        <span>Stopped</span>
+                        <span>Fast</span>
                       </div>
                     </ControlGroup>
                   </SidebarGroupContent>

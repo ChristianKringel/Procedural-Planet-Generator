@@ -523,7 +523,20 @@ function sphereMesh(subdiv: number, settings: PlanetSettings) {
     const n3 = noiseMicro(dx * 8.0, dy * 8.0, dz * 8.0);
 
     const h = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * settings.noiseStrength;
-    const displacement = h * 0.10;
+    let displacement = h * 0.10;
+    
+    // Apply relief aggressiveness to create more/fewer peaks and mountains
+    // This is separate from noise strength - it amplifies the extremes
+    const aggressiveness = settings.reliefAggressiveness ?? 1.0;
+    if (aggressiveness !== 1.0) {
+      // Preserve the sign (for valleys) but apply power to the magnitude
+      const sign = displacement >= 0 ? 1 : -1;
+      const magnitude = Math.abs(displacement);
+      // Scale by a reference to keep similar range
+      const scaled = magnitude / 0.15; // normalize to ~0-1 range
+      const amplified = Math.pow(scaled, aggressiveness) * 0.15;
+      displacement = sign * amplified;
+    }
     
     // Calculate normalized height for this noise value
     // This represents height relative to the base sphere (radius 1.0)
@@ -719,6 +732,7 @@ export class PlanetRenderer {
 
   private cameraDist = 3.15;
   private autoRotate = true;
+  private rotationSpeed = 1.0;
   private objectDrawLogged = false;
   private initialized = false;
 
@@ -771,6 +785,7 @@ export class PlanetRenderer {
     this.gl = gl;
 
     this.settings = settings;
+    this.rotationSpeed = settings.rotationSpeed ?? 1.0;
 
     this.planetProg = createProgram(gl, PLANET_VS, PLANET_FS);
     this.shadowProg = createProgram(gl, SHADOW_VS, SHADOW_FS);
@@ -1037,6 +1052,7 @@ export class PlanetRenderer {
 
   setSettings(next: PlanetSettings, opts?: { rebuild?: boolean; redistribute?: boolean }) {
     this.settings = next;
+    this.rotationSpeed = next.rotationSpeed ?? 1.0;
     if (opts?.rebuild) this.rebuildPlanet();
     if (opts?.redistribute) this.redistributeObjects();
   }
@@ -2443,8 +2459,8 @@ export class PlanetRenderer {
 
     // smooth rotation
     if (this.autoRotate) {
-      this.rot += dt * 0.12; // planet spins
-      this.cameraRot += dt * 0.06; // camera orbits
+      this.rot += dt * 0.12 * this.rotationSpeed; // planet spins
+      this.cameraRot += dt * 0.06 * this.rotationSpeed; // camera orbits
     }
 
     // fps smoothing
