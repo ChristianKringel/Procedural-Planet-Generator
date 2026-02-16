@@ -156,6 +156,18 @@ float hash(vec3 p) {
     return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
 }
 
+// Multi-octave noise for water depth variation
+float waterDepthNoise(vec3 p) {
+    // Multiple scales of noise to create natural depth patterns
+    float n1 = hash(p * 2.5);        // Large ocean patterns
+    float n2 = hash(p * 7.0);        // Medium patterns  
+    float n3 = hash(p * 18.0);       // Fine details
+    float n4 = hash(p * 45.0);       // Very fine ripples
+    
+    // Combine with different weights
+    return n1 * 0.5 + n2 * 0.25 + n3 * 0.15 + n4 * 0.1;
+}
+
 float sampleShadow(vec4 lightClip, vec3 normal, vec3 lightDir, float craterMask) {
   vec3 proj = lightClip.xyz / lightClip.w;
   vec2 uv = proj.xy * 0.5 + 0.5;
@@ -214,11 +226,36 @@ void main() {
     color = craterColor;
     landMask = 1.0;
   } else if (h < threshold) {
-    // ÁGUA
-    float depth = sat((threshold - h) * 4.0);
-    vec3 deepBlue = vec3(0.01, 0.05, 0.15);
-    vec3 shallowBlue = vec3(0.05, 0.45, 0.75);
-    color = mix(shallowBlue, deepBlue, depth);
+    // ÁGUA - varied colors from shallow beach to deep ocean
+    
+    // Normalize world position to get consistent noise pattern
+    vec3 noisePos = normalize(v_worldPos);
+    
+    // Get multi-scale depth noise
+    float depthNoise = waterDepthNoise(noisePos);
+    
+    // Distance from shore (how far below threshold)
+    // Now with 40% geometric height variation for better depth colors
+    float shoreDistance = sat((threshold - h) * 5.0); // 0 at shore, 1 far from shore
+    
+    // Combine shore distance with noise for natural depth variation
+    // Geometry provides the base, noise adds texture
+    float apparentDepth = shoreDistance * 0.7 + depthNoise * 0.3;
+    
+    // Water color gradient from beach to deep ocean
+    vec3 beachWater = vec3(0.15, 0.60, 0.85);    // Very shallow - bright cyan
+    vec3 shallowWater = vec3(0.08, 0.50, 0.78);  // Shallow - light blue
+    vec3 mediumWater = vec3(0.05, 0.38, 0.65);   // Medium depth - blue
+    vec3 deepWater = vec3(0.03, 0.25, 0.50);     // Deep - dark blue
+    vec3 oceanWater = vec3(0.01, 0.12, 0.30);    // Very deep ocean - very dark blue
+    
+    // Progressive color mixing based on depth - more aggressive transitions
+    vec3 waterColor = mix(beachWater, shallowWater, sat(apparentDepth * 3.0));
+    waterColor = mix(waterColor, mediumWater, sat(apparentDepth * 2.5 - 0.1));
+    waterColor = mix(waterColor, deepWater, sat(apparentDepth * 2.0 - 0.2));
+    waterColor = mix(waterColor, oceanWater, sat(apparentDepth * 1.5 - 0.3));
+    
+    color = waterColor;
 
     // Specular highlight na água
     vec3 H_water = normalize(L + V);
@@ -262,13 +299,18 @@ void main() {
     vec3 H = normalize(L + V);
     float spec = pow(sat(dot(N, H)), 40.0) * 0.2 * landMask;
 
-    // Shadow only affects direct lighting, ambient is always preserved
-    // Increased ambient from 0.2 to 0.3 for softer shadows
-    vec3 col = color * (0.3 + 0.7 * ndl * shadow);
-    col += spec * vec3(1.0) * shadow;
-    col += rim * vec3(0.4, 0.6, 1.0) * 0.15; // Atmosfera
-
-    outColor = vec4(col, 1.0);
+    // Craters get full uniform lighting without shadows or directional lighting
+    if (v_craterMask > 0.01) {
+      vec3 col = color * 0.95; // Bright uniform lighting for craters
+      col += rim * vec3(0.4, 0.6, 1.0) * 0.15;
+      outColor = vec4(col, 1.0);
+    } else {
+      // Normal shadow and lighting for non-crater areas
+      vec3 col = color * (0.3 + 0.7 * ndl * shadow);
+      col += spec * vec3(1.0) * shadow;
+      col += rim * vec3(0.4, 0.6, 1.0) * 0.15; // Atmosfera
+      outColor = vec4(col, 1.0);
+    }
   } else {
     // Without shadows: uniform ambient lighting
     vec3 col = color * 0.85;
@@ -314,12 +356,14 @@ uniform mat4 u_lightVP;
 out vec3 v_worldPos;
 out vec3 v_worldNormal;
 out vec4 v_lightClip;
+out vec3 v_localPos;
 
 void main() {
   vec4 wp = u_world * vec4(a_position, 1.0);
   v_worldPos = wp.xyz;
   v_worldNormal = mat3(u_world) * a_normal;
   v_lightClip = u_lightVP * wp;
+  v_localPos = a_position;
   gl_Position = u_proj * u_view * wp;
 }
 `;
@@ -330,10 +374,14 @@ precision highp float;
 in vec3 v_worldPos;
 in vec3 v_worldNormal;
 in vec4 v_lightClip;
+in vec3 v_localPos;
 
 uniform vec3 u_lightDir;
 uniform vec3 u_cameraPos;
 uniform vec3 u_albedo;
+uniform vec3 u_albedo2;
+uniform vec3 u_albedo3;
+uniform float u_isBoat;
 uniform bool u_shadowsEnabled;
 uniform sampler2D u_shadowMap;
 
@@ -371,6 +419,24 @@ void main() {
 
   float ndl = sat(dot(N, L));
 
+  // Multi-color variation for boats based on vertical position
+  vec3 baseColor = u_albedo;
+  if (u_isBoat > 0.5) {
+    float height = v_localPos.y;
+    // Lower hull
+    if (height < 0.15) {
+      baseColor = u_albedo;
+    }
+    // Mid section / deck
+    else if (height < 0.45) {
+      baseColor = u_albedo2;
+    }
+    // Superstructure
+    else {
+      baseColor = u_albedo3;
+    }
+  }
+
   if (u_shadowsEnabled) {
     float shadow = sampleShadow(v_lightClip, N, u_lightDir);
     vec3 H = normalize(L + V);
@@ -378,13 +444,13 @@ void main() {
 
     // Shadow only affects direct lighting, ambient is always preserved
     // Increased ambient from 0.25 to 0.35 for softer shadows
-    vec3 col = u_albedo * (0.35 + 0.65 * ndl * shadow);
+    vec3 col = baseColor * (0.35 + 0.65 * ndl * shadow);
     col += spec * vec3(0.9, 1.0, 1.0) * 0.25 * shadow;
 
     outColor = vec4(col, 1.0);
   } else {
     // Without shadows: uniform ambient lighting
-    vec3 col = u_albedo * 0.8;
+    vec3 col = baseColor * 0.8;
     outColor = vec4(col, 1.0);
   }
 }
@@ -457,7 +523,23 @@ function sphereMesh(subdiv: number, settings: PlanetSettings) {
     const n3 = noiseMicro(dx * 8.0, dy * 8.0, dz * 8.0);
 
     const h = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * settings.noiseStrength;
-    return h * 0.10;
+    const displacement = h * 0.10;
+    
+    // Calculate normalized height for this noise value
+    // This represents height relative to the base sphere (radius 1.0)
+    const normalizedHeight = displacement * 10.0; // scale to match shader calculations
+    
+    // If below water threshold, reduce displacement but keep enough variation for color depth
+    // This makes water calmer while land keeps its terrain
+    if (normalizedHeight < settings.waterThreshold) {
+      // Smooth transition near waterline to avoid sharp edge
+      const fadeRange = 0.15; // transition zone width
+      const fade = clamp((normalizedHeight - (settings.waterThreshold - fadeRange)) / fadeRange, 0, 1);
+      // Keep 40% of displacement for water (enough for depth colors, but calmer than land)
+      return displacement * (0.40 + fade * 0.60);
+    }
+    
+    return displacement;
   };
 
   const getPos = (lat: number, lon: number) => {
@@ -2083,13 +2165,46 @@ export class PlanetRenderer {
       }
       let pos = o.position as Vec3;
       let albedo: Vec3;
+      let albedo2: Vec3 = [0.8, 0.8, 0.8]; // Default deck color
+      let albedo3: Vec3 = [0.9, 0.9, 0.9]; // Default superstructure color
+      let isBoat = 0.0;
       let t = o.tangent as Vec3;
       let b = o.bitangent as Vec3;
 
       if (o.kind === "boat") {
+        isBoat = 1.0;
+        // Elevate boat above water surface to prevent sinking
         const bob = Math.sin(timeS * 1.8 + o.phase) * 0.005;
-        pos = add(pos, mulScalar(o.normal as Vec3, bob));
-        albedo = [0.12, 0.62, 0.78];
+        const floatHeight = 0.018; // Fine-tuned for realistic floating
+        pos = add(pos, mulScalar(o.normal as Vec3, bob + floatHeight));
+        // Varied boat colors based on phase (different boat color schemes)
+        // Each boat gets 3 colors: hull, deck, and superstructure
+        const tp = o.phase / (Math.PI * 2); // 0–1
+        if (tp < 0.20) {
+          albedo = [0.18, 0.25, 0.35]; // Dark blue/gray hull
+          albedo2 = [0.82, 0.78, 0.72]; // Cream deck
+          albedo3 = [0.72, 0.25, 0.22]; // Red superstructure
+        } else if (tp < 0.35) {
+          albedo = [0.75, 0.28, 0.22]; // Red/orange hull
+          albedo2 = [0.88, 0.85, 0.80]; // White deck
+          albedo3 = [0.22, 0.22, 0.25]; // Dark superstructure
+        } else if (tp < 0.50) {
+          albedo = [0.85, 0.82, 0.75]; // White/cream hull
+          albedo2 = [0.35, 0.48, 0.62]; // Blue deck
+          albedo3 = [0.88, 0.85, 0.82]; // Light superstructure
+        } else if (tp < 0.65) {
+          albedo = [0.25, 0.52, 0.65]; // Teal/aqua hull
+          albedo2 = [0.88, 0.88, 0.90]; // White deck
+          albedo3 = [0.65, 0.28, 0.25]; // Red-brown superstructure
+        } else if (tp < 0.80) {
+          albedo = [0.68, 0.58, 0.32]; // Sandy/tan hull
+          albedo2 = [0.45, 0.35, 0.28]; // Brown deck
+          albedo3 = [0.85, 0.82, 0.75]; // Cream superstructure
+        } else {
+          albedo = [0.35, 0.42, 0.38]; // Green/military hull
+          albedo2 = [0.28, 0.32, 0.30]; // Dark green deck
+          albedo3 = [0.82, 0.78, 0.70]; // Tan superstructure
+        }
       } else if (o.kind === "snow_tree") {
         // snow tree with tiny sway
         const sway = Math.sin(timeS * 1.6 + o.phase) * 0.015;
@@ -2128,6 +2243,9 @@ export class PlanetRenderer {
       const world = mat4Mul(planetRot, objLocal);
       gl.uniformMatrix4fv(gl.getUniformLocation(this.objProg, "u_world"), false, world);
       gl.uniform3f(gl.getUniformLocation(this.objProg, "u_albedo"), albedo[0], albedo[1], albedo[2]);
+      gl.uniform3f(gl.getUniformLocation(this.objProg, "u_albedo2"), albedo2[0], albedo2[1], albedo2[2]);
+      gl.uniform3f(gl.getUniformLocation(this.objProg, "u_albedo3"), albedo3[0], albedo3[1], albedo3[2]);
+      gl.uniform1f(gl.getUniformLocation(this.objProg, "u_isBoat"), isBoat);
 
       if (o.kind === "tree") {
         if (!this.treeVao) {
