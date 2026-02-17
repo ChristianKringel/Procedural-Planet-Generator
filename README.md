@@ -41,6 +41,18 @@ Um slider de **-1** a **1** que define onde começa o oceano. Puxa pra direita e
 
 Um slider de **0** a **2000** que define quantos objetos são espalhados pelo planeta automaticamente. Árvores caem na terra e barcos ficam na água.
 
+### ⛰️ Relief Aggressiveness (Agressividade do Relevo)
+
+Um slider de **0** a **2** que controla o quão pronunciados são picos e montanhas. Valores maiores deixam o terreno mais dramático e pontiagudo.
+
+### 🚀 Missile Duration (Duração do Míssil)
+
+Um slider de **0.3s** a **5.0s** que define a duração/velocidade dos mísseis lançados com a tecla **M**. Menor valor = míssil mais rápido.
+
+### 🌀 Rotation Speed (Velocidade de Rotação)
+
+Um slider de **0×** a **3×** que controla a velocidade da rotação automática do planeta quando a rotação automática está ativada.
+
 ### ☀️ Shadows (Sombras)
 
 Liga ou desliga as sombras do sol no planeta. Com sombras ligadas o visual fica bem mais bonito.
@@ -69,6 +81,9 @@ Liga ou desliga a rotação automática do planeta. Desativa se quiser deixar el
 | **Scroll** | Zoom, aproxima ou afasta |
 | **Clique direito** | Coloca uma árvore (na terra) ou um barco (na água) onde você clicou |
 
+| **Tecla M** | Lança um míssil na direção do cursor; cria crateras ao atingir a superfície |
+| **Tecla P** | Pausa/retoma a rotação automática do planeta |
+
 ---
 
 ## Informações na Tela
@@ -79,3 +94,32 @@ No rodapé da barra lateral tem uns indicadores:
 - **Seed** mostra a seed atual do planeta
 - **Triangles** mostra quantos triângulos formam a malha do planeta
 - **Objects** mostra quantos objetos (árvores e barcos) existem no planeta
+
+---
+
+## Como rodar (desenvolvimento)
+
+Siga estes passos para executar o projeto localmente:
+
+1. Instale dependências:
+
+```bash
+npm install
+```
+
+2. Rode em modo desenvolvimento (servidor + cliente):
+
+```bash
+npm run dev
+```
+
+3. Abra o navegador em:
+
+```
+http://localhost:5000
+```
+
+Observações:
+
+- O script `dev` inicia o servidor que integra o cliente (Vite) e a API. A porta padrão é `5000`.
+- Para preparar uma versão de produção, use `npm run build` e depois `npm start`.
