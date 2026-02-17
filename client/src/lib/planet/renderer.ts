@@ -142,6 +142,7 @@ uniform float u_waterThreshold;
 uniform float u_noiseStrength;
 uniform float u_time;
 uniform bool u_shadowsEnabled;
+uniform bool u_debugShadow;
 
 uniform sampler2D u_shadowMap;
 
@@ -175,25 +176,36 @@ float sampleShadow(vec4 lightClip, vec3 normal, vec3 lightDir, float craterMask)
 
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
 
-  // Adaptive bias based on surface angle to light
+  // Surfaces facing away from the light get no shadow lookup.
+  // The orthographic projection overlaps both hemispheres, so the
+  // near-hemisphere front face is stored in the shadow map.  Back-facing
+  // fragments on the far hemisphere would always fail the depth test and
+  // appear fully shadowed.  We fade the shadow contribution to zero for
+  // those fragments so that darkening is handled solely by ndl.
   float cosTheta = sat(dot(normal, -lightDir));
-  float bias = 0.0015 * tan(acos(cosTheta));
-  bias = clamp(bias, 0.0005, 0.003);
-  
-  // Extra bias for crater areas to prevent excessive self-shadowing
-  // Craters are depressions and shouldn't be completely dark
-  bias += craterMask * 0.008;
+  if (cosTheta < 0.01) return 1.0;
+  float shadowFade = smoothstep(0.01, 0.1, cosTheta);
+
+  // Shadow map stores back-face depth of the planet (~0.74 in NDC).
+  // Objects are rendered with a small lift so their depth (~0.10) is
+  // reliably shallower than the back face.  Standard comparison:
+  // if current > depth → in shadow.
+  float bias = 0.0005;
 
   float shadow = 0.0;
   vec2 texel = 1.0 / vec2(textureSize(u_shadowMap, 0));
-  // Reduced PCF kernel from 5x5 to 3x3 for tighter shadows
   for (int y = -1; y <= 1; y++) {
     for (int x = -1; x <= 1; x++) {
       float depth = texture(u_shadowMap, uv + vec2(float(x), float(y)) * texel).r;
-      shadow += (current - bias) <= depth ? 1.0 : 0.0;
+      shadow += (current - bias > depth) ? 0.0 : 1.0;
     }
   }
-  return shadow / 9.0;
+  shadow = shadow / 9.0;
+
+  // Blend shadow out near terminator to avoid hard edge
+  shadow = mix(1.0, shadow, shadowFade);
+
+  return shadow;
 }
 
 void main() {
@@ -295,6 +307,13 @@ void main() {
   if (u_shadowsEnabled) {
     float shadow = sampleShadow(v_lightClip, N, u_lightDir, v_craterMask);
 
+    // DEBUG: visualize raw shadow value
+    if (u_debugShadow) {
+      // Red = in shadow (shadow=0), Green = lit (shadow=1)
+      outColor = vec4(1.0 - shadow, shadow, 0.0, 1.0);
+      return;
+    }
+
     // Specular (less pronounced than water)
     vec3 H = normalize(L + V);
     float spec = pow(sat(dot(N, H)), 40.0) * 0.2 * landMask;
@@ -305,8 +324,9 @@ void main() {
       col += rim * vec3(0.4, 0.6, 1.0) * 0.15;
       outColor = vec4(col, 1.0);
     } else {
-      // Normal shadow and lighting for non-crater areas
-      vec3 col = color * (0.3 + 0.7 * ndl * shadow);
+      // Enhanced shadow contrast for better visibility
+      // ambient: 0.2, diffuse with shadow: 0.8
+      vec3 col = color * (0.2 + 0.8 * ndl * shadow);
       col += spec * vec3(1.0) * shadow;
       col += rim * vec3(0.4, 0.6, 1.0) * 0.15; // Atmosfera
       outColor = vec4(col, 1.0);
@@ -395,21 +415,26 @@ float sampleShadow(vec4 lightClip, vec3 normal, vec3 lightDir) {
   float current = proj.z * 0.5 + 0.5;
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
 
-  // Adaptive bias based on surface angle to light
   float cosTheta = clamp(dot(normal, -lightDir), 0.0, 1.0);
-  float bias = 0.0015 * tan(acos(cosTheta));
-  bias = clamp(bias, 0.0005, 0.003);
+  float bias = 0.0005 * tan(acos(cosTheta));
+  bias = clamp(bias, 0.0001, 0.001);
+
+  // Max shadow distance: shadows fade when caster is far from surface
+  // Depth range is ~3.5 units (near=6, far=9.5), objects are ~0.1 tall
+  float maxDepthDiff = 0.04;
 
   vec2 texel = 1.0 / vec2(textureSize(u_shadowMap, 0));
   float shadow = 0.0;
-  // Reduced PCF kernel from 5x5 to 3x3
   for (int y=-1; y<=1; y++){
     for (int x=-1; x<=1; x++){
       float depth = texture(u_shadowMap, uv + vec2(float(x), float(y)) * texel).r;
-      shadow += (current - bias) <= depth ? 1.0 : 0.0;
+      float diff = current - bias - depth;
+      shadow += (diff > 0.0 && diff < maxDepthDiff) ? 0.0 : 1.0;
     }
   }
-  return shadow / 9.0;
+  shadow = shadow / 9.0;
+  
+  return shadow;
 }
 
 void main() {
@@ -437,22 +462,15 @@ void main() {
     }
   }
 
-  if (u_shadowsEnabled) {
-    float shadow = sampleShadow(v_lightClip, N, u_lightDir);
-    vec3 H = normalize(L + V);
-    float spec = pow(sat(dot(N, H)), 80.0);
+  // Objects CAST shadows (drawn in shadow pass) but do NOT receive them.
+  // Standard directional lighting only.
+  vec3 H = normalize(L + V);
+  float spec = pow(sat(dot(N, H)), 80.0);
 
-    // Shadow only affects direct lighting, ambient is always preserved
-    // Increased ambient from 0.25 to 0.35 for softer shadows
-    vec3 col = baseColor * (0.35 + 0.65 * ndl * shadow);
-    col += spec * vec3(0.9, 1.0, 1.0) * 0.25 * shadow;
+  vec3 col = baseColor * (0.25 + 0.75 * ndl);
+  col += spec * vec3(0.9, 1.0, 1.0) * 0.25;
 
-    outColor = vec4(col, 1.0);
-  } else {
-    // Without shadows: uniform ambient lighting
-    vec3 col = baseColor * 0.8;
-    outColor = vec4(col, 1.0);
-  }
+  outColor = vec4(col, 1.0);
 }
 `;
 
@@ -501,6 +519,63 @@ function transformVec3(m: Mat4, v: Vec3): Vec3 {
   ];
 }
 
+/**
+ * Calculate terrain displacement for a given direction on the sphere.
+ * This function applies noise layers and reliefAggressiveness consistently
+ * across terrain mesh, object placement, and ray picking.
+ * 
+ * @param dir - Unit direction vector on the sphere
+ * @param noiseBase - Base noise sampler
+ * @param noiseDetail - Detail noise sampler
+ * @param noiseMicro - Micro noise sampler
+ * @param settings - Planet settings including noiseStrength, reliefAggressiveness, waterThreshold
+ * @returns Displacement value (added to base radius 1.0)
+ */
+function calculateDisplacement(
+  dir: Vec3,
+  noiseBase: (x: number, y: number, z: number) => number,
+  noiseDetail: (x: number, y: number, z: number) => number,
+  noiseMicro: (x: number, y: number, z: number) => number,
+  settings: PlanetSettings
+): number {
+  const [dx, dy, dz] = dir;
+  const n1 = noiseBase(dx, dy, dz);
+  const n2 = noiseDetail(dx * 3.0, dy * 3.0, dz * 3.0);
+  const n3 = noiseMicro(dx * 8.0, dy * 8.0, dz * 8.0);
+
+  const h = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * settings.noiseStrength;
+  let displacement = h * 0.10;
+  
+  // Apply relief aggressiveness to create more/fewer peaks and mountains
+  // This is separate from noise strength - it amplifies the extremes
+  const aggressiveness = settings.reliefAggressiveness ?? 1.0;
+  if (aggressiveness !== 1.0) {
+    // Preserve the sign (for valleys) but apply power to the magnitude
+    const sign = displacement >= 0 ? 1 : -1;
+    const magnitude = Math.abs(displacement);
+    // Scale by a reference to keep similar range
+    const scaled = magnitude / 0.15; // normalize to ~0-1 range
+    const amplified = Math.pow(scaled, aggressiveness) * 0.15;
+    displacement = sign * amplified;
+  }
+  
+  // Calculate normalized height for this noise value
+  // This represents height relative to the base sphere (radius 1.0)
+  const normalizedHeight = displacement * 10.0; // scale to match shader calculations
+  
+  // If below water threshold, reduce displacement but keep enough variation for color depth
+  // This makes water calmer while land keeps its terrain
+  if (normalizedHeight < settings.waterThreshold) {
+    // Smooth transition near waterline to avoid sharp edge
+    const fadeRange = 0.15; // transition zone width
+    const fade = clamp((normalizedHeight - (settings.waterThreshold - fadeRange)) / fadeRange, 0, 1);
+    // Keep 40% of displacement for water (enough for depth colors, but calmer than land)
+    return displacement * (0.40 + fade * 0.60);
+  }
+  
+  return displacement;
+}
+
 function sphereMesh(subdiv: number, settings: PlanetSettings) {
   const latSeg = subdiv;
   const lonSeg = subdiv * 2;
@@ -513,34 +588,8 @@ function sphereMesh(subdiv: number, settings: PlanetSettings) {
   const noiseDetail = makeNoiseSampler(settings.seed + "_detail", settings.noiseType as NoiseType);
   const noiseMicro = makeNoiseSampler(settings.seed + "_micro", settings.noiseType as NoiseType);
 
-  // Compute displacement from 3D Cartesian sphere direction (unit vector).
-  // Sampling noise in 3D eliminates the longitude seam and pole convergence
-  // artifacts that 2D lat/lon mapping causes.
-  const getDisplacement = (dir: Vec3) => {
-    const [dx, dy, dz] = dir;
-    const n1 = noiseBase(dx, dy, dz);
-    const n2 = noiseDetail(dx * 3.0, dy * 3.0, dz * 3.0);
-    const n3 = noiseMicro(dx * 8.0, dy * 8.0, dz * 8.0);
-
-    const h = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * settings.noiseStrength;
-    const displacement = h * 0.10;
-    
-    // Calculate normalized height for this noise value
-    // This represents height relative to the base sphere (radius 1.0)
-    const normalizedHeight = displacement * 10.0; // scale to match shader calculations
-    
-    // If below water threshold, reduce displacement but keep enough variation for color depth
-    // This makes water calmer while land keeps its terrain
-    if (normalizedHeight < settings.waterThreshold) {
-      // Smooth transition near waterline to avoid sharp edge
-      const fadeRange = 0.15; // transition zone width
-      const fade = clamp((normalizedHeight - (settings.waterThreshold - fadeRange)) / fadeRange, 0, 1);
-      // Keep 40% of displacement for water (enough for depth colors, but calmer than land)
-      return displacement * (0.40 + fade * 0.60);
-    }
-    
-    return displacement;
-  };
+  // Use shared displacement calculation for consistency with object placement
+  const getDisplacement = (dir: Vec3) => calculateDisplacement(dir, noiseBase, noiseDetail, noiseMicro, settings);
 
   const getPos = (lat: number, lon: number) => {
     const cl = Math.cos(lat);
@@ -719,6 +768,7 @@ export class PlanetRenderer {
 
   private cameraDist = 3.15;
   private autoRotate = true;
+  private rotationSpeed = 1.0;
   private objectDrawLogged = false;
   private initialized = false;
 
@@ -734,7 +784,7 @@ export class PlanetRenderer {
   private view: Mat4 = mat4Identity();
   private proj: Mat4 = mat4Identity();
 
-  private lightDir: Vec3 = normalize([-0.6, -0.35, -0.55]);
+  private lightDir: Vec3 = normalize([-0.35, -0.85, -0.35]);
 
   // Missile & impact system
   private craters: Crater[] = [];
@@ -771,13 +821,14 @@ export class PlanetRenderer {
     this.gl = gl;
 
     this.settings = settings;
+    this.rotationSpeed = settings.rotationSpeed ?? 1.0;
 
     this.planetProg = createProgram(gl, PLANET_VS, PLANET_FS);
     this.shadowProg = createProgram(gl, SHADOW_VS, SHADOW_FS);
     this.objProg = createProgram(gl, OBJ_VS, OBJ_FS);
     this.particleProg = createProgram(gl, PARTICLE_VS, PARTICLE_FS);
 
-    this.shadow = createShadowTarget(gl, 2048);
+    this.shadow = createShadowTarget(gl, 4096);
 
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
@@ -1037,6 +1088,7 @@ export class PlanetRenderer {
 
   setSettings(next: PlanetSettings, opts?: { rebuild?: boolean; redistribute?: boolean }) {
     this.settings = next;
+    this.rotationSpeed = next.rotationSpeed ?? 1.0;
     if (opts?.rebuild) this.rebuildPlanet();
     if (opts?.redistribute) this.redistributeObjects();
   }
@@ -1255,16 +1307,32 @@ export class PlanetRenderer {
   }
 
   private computeLightVP() {
-    // directional light: ortho focused tightly on planet only
+    // Fixed directional light that rotates WITH the planet so shadows
+    // stay anchored to objects as the planet spins.
+    //
+    // The light direction has a strong horizontal component so that
+    // shadows on the visible hemisphere (equator) stay compact and close
+    // to the objects that cast them.  A nearly-vertical light (large |Y|)
+    // would hit the equator at a grazing angle, stretching shadows across
+    // almost the entire planet radius.
+    const baseLightDir: Vec3 = normalize([-0.4, -0.6, -0.7]);
+
+    // Rotate baseLightDir around Y by the current planet rotation angle
+    const cosR = Math.cos(this.rot);
+    const sinR = Math.sin(this.rot);
+    this.lightDir = normalize([
+      baseLightDir[0] * cosR + baseLightDir[2] * sinR,
+      baseLightDir[1],
+      -baseLightDir[0] * sinR + baseLightDir[2] * cosR,
+    ]);
+
     const lightPos: Vec3 = mulScalar(this.lightDir, -7.5);
     const center: Vec3 = [0, 0, 0];
+    // Standard up vector; works as long as the light isn't straight along Y
     const up: Vec3 = [0, 1, 0];
 
     const lightView = mat4LookAt(lightPos, center, up);
-    // Tighter frustum: planet radius ~1.15, ±1.25 focuses on planet surface
-    // This prevents distant objects from casting shadows across the planet
-    // Near/far: light at 7.5, planet surface at ~6.3–8.7 from light.
-    const lightProj = mat4Ortho(-1.25, 1.25, -1.25, 1.25, 6.0, 9.5);
+    const lightProj = mat4Ortho(-1.5, 1.5, -1.5, 1.5, 6.0, 9.5);
     this.shadowVP = mat4Mul(lightProj, lightView);
   }
 
@@ -1287,10 +1355,8 @@ export class PlanetRenderer {
       const r = Math.sqrt(1 - z * z);
       const base: Vec3 = [r * Math.cos(t), z, r * Math.sin(t)];
 
-      const n1 = noiseBase(base[0], base[1], base[2]);
-      const n2 = noiseDetail(base[0] * 3.0, base[1] * 3.0, base[2] * 3.0);
-      const n3 = noiseMicro(base[0] * 8.0, base[1] * 8.0, base[2] * 8.0);
-      const height = (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * this.settings.noiseStrength * 0.10;
+      // Use shared displacement calculation to account for reliefAggressiveness
+      const height = calculateDisplacement(base, noiseBase, noiseDetail, noiseMicro, this.settings);
       const isWater = height < this.settings.waterThreshold * 0.10;
       const isSnow = (height * 10.0) >= 0.8; // Snow starts at h=0.8 in normalized range
 
@@ -1401,12 +1467,8 @@ export class PlanetRenderer {
     const noiseDetail = makeNoiseSampler(this.settings.seed + "_detail", this.settings.noiseType as NoiseType);
     const noiseMicro = makeNoiseSampler(this.settings.seed + "_micro", this.settings.noiseType as NoiseType);
 
-    const computeHeight = (ld: Vec3) => {
-      const n1 = noiseBase(ld[0], ld[1], ld[2]);
-      const n2 = noiseDetail(ld[0] * 3.0, ld[1] * 3.0, ld[2] * 3.0);
-      const n3 = noiseMicro(ld[0] * 8.0, ld[1] * 8.0, ld[2] * 8.0);
-      return (n1 * 1.0 + n2 * 0.5 + n3 * 0.25) * this.settings.noiseStrength * 0.10;
-    };
+    // Use shared displacement calculation to account for reliefAggressiveness
+    const computeHeight = (ld: Vec3) => calculateDisplacement(ld, noiseBase, noiseDetail, noiseMicro, this.settings);
 
     // Helper: signed distance from the terrain surface at ray parameter t.
     // Positive = above terrain, negative = inside terrain.
@@ -2180,18 +2242,22 @@ export class PlanetRenderer {
     const uWorld = gl.getUniformLocation(this.shadowProg, "u_world");
     const uLightVP = gl.getUniformLocation(this.shadowProg, "u_lightVP");
 
-    // Hardware polygon offset bias — reduced for less aggressive shadowing
-    gl.enable(gl.POLYGON_OFFSET_FILL);
-    gl.polygonOffset(0.5, 1.0);
-
-    // planet — cull front faces so shadow map stores back-face depth (natural bias)
+    // Planet: cull FRONT faces → renders the planet's back-face depth
+    // (the far hemisphere surface as seen from the light).  The back face
+    // depth (~0.74) is much larger than the front face depth (~0.11), so
+    // front-face fragments in the main pass always satisfy
+    //   current < back_depth → lit.
+    // Objects rendered without culling write their true depth (~0.11 minus
+    // a small lift), which is shallower than the back face.  Surface
+    // fragments behind the object then satisfy
+    //   current > obj_depth → in shadow.
     gl.cullFace(gl.FRONT);
     gl.bindVertexArray(this.planetVao!);
     gl.uniformMatrix4fv(uWorld, false, mat4RotateY(this.rot));
     gl.uniformMatrix4fv(uLightVP, false, this.shadowVP);
     gl.drawElements(gl.TRIANGLES, this.planetIndexCount, gl.UNSIGNED_INT, 0);
 
-    // objects — disable culling so left-handed basis doesn't hide faces from light
+    // objects — no polygon offset, no face culling
     gl.disable(gl.CULL_FACE);
 
     const planetRot = mat4RotateY(this.rot);
@@ -2204,6 +2270,16 @@ export class PlanetRenderer {
         const bob = Math.sin(timeS * 1.8 + o.phase) * 0.005;
         pos = add(pos, mulScalar(o.normal as Vec3, bob));
       }
+
+      // Lift the object slightly above the surface in the SHADOW PASS
+      // ONLY.  This creates a reliable depth gap between the object
+      // (closer to the light) and the planet surface (further from the
+      // light) so that the depth comparison in the main pass can detect
+      // the shadow even at the object's base where object depth ≈ surface
+      // depth.  The lift is invisible because the shadow pass only writes
+      // depth — not color.
+      const shadowLift = 0.04;
+      pos = add(pos, mulScalar(o.normal as Vec3, shadowLift));
 
       const objLocal = this.worldFromBasis(pos, o.normal as Vec3, o.tangent as Vec3, o.bitangent as Vec3, o.scale);
       const world = mat4Mul(planetRot, objLocal);
@@ -2229,7 +2305,6 @@ export class PlanetRenderer {
 
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
-    gl.disable(gl.POLYGON_OFFSET_FILL);
     gl.bindVertexArray(null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.colorMask(true, true, true, true);
@@ -2282,6 +2357,8 @@ export class PlanetRenderer {
     gl.uniform1f(gl.getUniformLocation(this.planetProg, "u_time"), timeS);
     gl.uniform1i(gl.getUniformLocation(this.planetProg, "u_shadowMap"), 0);
     gl.uniform1i(gl.getUniformLocation(this.planetProg, "u_shadowsEnabled"), this.settings.shadowsEnabled ? 1 : 0);
+    // DEBUG: set to 1 to see raw shadow map values (red=shadow, green=lit)
+    gl.uniform1i(gl.getUniformLocation(this.planetProg, "u_debugShadow"), 0);
 
     gl.drawElements(gl.TRIANGLES, this.planetIndexCount, gl.UNSIGNED_INT, 0);
 
@@ -2443,8 +2520,8 @@ export class PlanetRenderer {
 
     // smooth rotation
     if (this.autoRotate) {
-      this.rot += dt * 0.12; // planet spins
-      this.cameraRot += dt * 0.06; // camera orbits
+      this.rot += dt * 0.12 * this.rotationSpeed; // planet spins
+      this.cameraRot += dt * 0.06 * this.rotationSpeed; // camera orbits
     }
 
     // fps smoothing

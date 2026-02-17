@@ -8,6 +8,8 @@ export const planetSettingsSchema = z.object({
   waterThreshold: z.number().min(-1).max(1),
   noiseStrength: z.number().min(0).max(5),
   noiseType: z.union([z.literal("perlin"), z.literal("simplex"), z.literal("random")]),
+  reliefAggressiveness: z.number().min(0).max(2).default(1.0),
+  rotationSpeed: z.number().min(0).max(3).default(1.0),
   objectCount: z.number().int().min(0).max(2000),
   shadowsEnabled: z.boolean(),  missileDuration: z.number().min(0.3).max(5.0).default(1.2),});
 
