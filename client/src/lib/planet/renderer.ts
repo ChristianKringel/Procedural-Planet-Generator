@@ -1,7 +1,6 @@
 import type { NoiseType, PickResult, PlanetSettings, PlacedObject, ObjectKind, ObjModel } from "@shared/schema";
 import { makeNoiseSampler } from "./noise";
 import { parseObj } from "./obj";
-import { BOAT_OBJ, TREE_OBJ } from "./models";
 import {
   anyPerpendicular,
   clamp,
@@ -176,20 +175,12 @@ float sampleShadow(vec4 lightClip, vec3 normal, vec3 lightDir, float craterMask)
 
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
 
-  // Surfaces facing away from the light get no shadow lookup.
-  // The orthographic projection overlaps both hemispheres, so the
-  // near-hemisphere front face is stored in the shadow map.  Back-facing
-  // fragments on the far hemisphere would always fail the depth test and
-  // appear fully shadowed.  We fade the shadow contribution to zero for
-  // those fragments so that darkening is handled solely by ndl.
+  // Shadow fade and lookup
   float cosTheta = sat(dot(normal, -lightDir));
   if (cosTheta < 0.01) return 1.0;
   float shadowFade = smoothstep(0.01, 0.1, cosTheta);
 
-  // Shadow map stores back-face depth of the planet (~0.74 in NDC).
-  // Objects are rendered with a small lift so their depth (~0.10) is
-  // reliably shallower than the back face.  Standard comparison:
-  // if current > depth → in shadow.
+  // Sample shadow map with simple percentage-closer filtering (PCF)
   float bias = 0.0005;
 
   float shadow = 0.0;
@@ -547,7 +538,7 @@ function calculateDisplacement(
   let displacement = h * 0.10;
   
   // Apply relief aggressiveness to create more/fewer peaks and mountains
-  // This is separate from noise strength - it amplifies the extremes
+  // Amplify extremes separate from noise strength
   const aggressiveness = settings.reliefAggressiveness ?? 1.0;
   if (aggressiveness !== 1.0) {
     // Preserve the sign (for valleys) but apply power to the magnitude
@@ -560,11 +551,11 @@ function calculateDisplacement(
   }
   
   // Calculate normalized height for this noise value
-  // This represents height relative to the base sphere (radius 1.0)
+  // Height relative to base sphere (radius 1.0)
   const normalizedHeight = displacement * 10.0; // scale to match shader calculations
   
   // If below water threshold, reduce displacement but keep enough variation for color depth
-  // This makes water calmer while land keeps its terrain
+  // Reduce displacement for underwater areas
   if (normalizedHeight < settings.waterThreshold) {
     // Smooth transition near waterline to avoid sharp edge
     const fadeRange = 0.15; // transition zone width
@@ -841,7 +832,7 @@ export class PlanetRenderer {
 
     // Initialize asynchronously then start loop
     this.initRenderer().then(() => {
-      console.log("✓ Renderer initialized, starting render loop");
+      console.log("Renderer initialized, starting render loop");
       this.raf = requestAnimationFrame(this.loop);
     });
   }
@@ -869,16 +860,16 @@ export class PlanetRenderer {
     if (e.key === 'm' || e.key === 'M') {
       console.log('[MISSILE] M key pressed! mouseX:', this.mouseClientX, 'mouseY:', this.mouseClientY, 'initialized:', this.initialized);
       if (!this.initialized) {
-        console.log('[MISSILE] ⏳ Renderer not initialized yet');
+        console.log('[MISSILE] Renderer not initialized yet');
         return;
       }
       const pick = this.pick(this.mouseClientX, this.mouseClientY);
-      console.log('[MISSILE] 🎯 Pick result:', { hit: pick.hit, localDir: pick.localDir, height: pick.height, isWater: pick.isWater });
+      console.log('[MISSILE] Pick result:', { hit: pick.hit, localDir: pick.localDir, height: pick.height, isWater: pick.isWater });
       if (pick.hit) {
         this.launchMissile(pick);
-        console.log('[MISSILE] 🚀 Missile launched! Total missiles:', this.missiles.length);
+        console.log('[MISSILE] Missile launched! Total missiles:', this.missiles.length);
       } else {
-        console.log('[MISSILE] ❌ Pick missed planet - aim cursor at the planet!');
+        console.log('[MISSILE] Pick missed planet - aim cursor at the planet!');
       }
     }
   }
@@ -914,21 +905,21 @@ export class PlanetRenderer {
   }
 
   private async initRenderer() {
-    console.log("🚀 Starting renderer initialization...");
+    console.log("Starting renderer initialization...");
     const modelsLoaded = await this.loadModels();
     if (!modelsLoaded) {
-      console.error("❌ Failed to load models, objects will not render");
+      console.error("Failed to load models, objects will not render");
     }
     this.initObjects();
     this.rebuildPlanet();
     this.redistributeObjects();
     this.initialized = true;
-    console.log("✅ Renderer initialization complete");
+    console.log("Renderer initialization complete");
   }
 
   private async loadModels(): Promise<boolean> {
     try {
-      console.log("📦 Fetching models...");
+      console.log("Fetching models...");
       const base = import.meta.env.BASE_URL;
       const [treeRes, boatRes, snowTreeRes, rocketRes] = await Promise.all([
         fetch(`${base}models/new_tree.obj`),
@@ -938,7 +929,7 @@ export class PlanetRenderer {
       ]);
 
       if (!treeRes.ok || !boatRes.ok || !snowTreeRes.ok || !rocketRes.ok) {
-        console.error("❌ Failed to fetch models:", {
+        console.error("Failed to fetch models:", {
           tree: treeRes.status,
           boat: boatRes.status,
           snow_tree: snowTreeRes.status,
@@ -1064,7 +1055,7 @@ export class PlanetRenderer {
         }
       }
 
-      console.log("✅ Models loaded:", {
+      console.log("Models loaded:", {
         tree: `${this.treeModel.positions.length / 3} verts, ${this.treeModel.indices.length / 3} tris`,
         boat: `${this.boatModel.positions.length / 3} verts, ${this.boatModel.indices.length / 3} tris`,
         snow_tree: `${this.snowTreeModel.positions.length / 3} verts, ${this.snowTreeModel.indices.length / 3} tris`,
@@ -1072,7 +1063,7 @@ export class PlanetRenderer {
       });
       return true;
     } catch (e) {
-      console.error("❌ Exception loading models:", e);
+      console.error("Exception loading models:", e);
       return false;
     }
   }
@@ -1143,7 +1134,7 @@ export class PlanetRenderer {
   private initObjects() {
     const gl = this.gl;
     if (!this.treeModel || !this.boatModel || !this.snowTreeModel || !this.rocketModel) {
-      console.warn("⚠️ Cannot init objects: models not loaded", {
+      console.warn("Cannot init objects: models not loaded", {
         treeModel: !!this.treeModel,
         boatModel: !!this.boatModel,
         snowTreeModel: !!this.snowTreeModel,
@@ -1152,7 +1143,7 @@ export class PlanetRenderer {
       return;
     }
 
-    console.log("🔧 Initializing object VAOs...", {
+    console.log("Initializing object VAOs...", {
       treeVerts: this.treeModel.positions.length / 3,
       treeTris: this.treeModel.indices.length / 3,
       boatVerts: this.boatModel.positions.length / 3,
@@ -1176,7 +1167,7 @@ export class PlanetRenderer {
       );
       this.treeVao = vaoInfo.vao;
       this.treeIndexCount = this.treeModel.indices.length;
-      console.log("✓ Tree VAO created, indices:", this.treeIndexCount);
+      console.log("Tree VAO created, indices:", this.treeIndexCount);
     }
 
     // boat
@@ -1192,7 +1183,7 @@ export class PlanetRenderer {
       );
       this.boatVao = vaoInfo.vao;
       this.boatIndexCount = this.boatModel.indices.length;
-      console.log("✓ Boat VAO created, indices:", this.boatIndexCount);
+      console.log("Boat VAO created, indices:", this.boatIndexCount);
     }
 
     // snow_tree
@@ -1208,7 +1199,7 @@ export class PlanetRenderer {
       );
       this.snowTreeVao = vaoInfo.vao;
       this.snowTreeIndexCount = this.snowTreeModel.indices.length;
-      console.log("✓ Snow Tree VAO created, indices:", this.snowTreeIndexCount);
+      console.log("Snow Tree VAO created, indices:", this.snowTreeIndexCount);
     }
 
     // rocket
@@ -1224,7 +1215,7 @@ export class PlanetRenderer {
       );
       this.rocketVao = vaoInfo.vao;
       this.rocketIndexCount = this.rocketModel.indices.length;
-      console.log("✓ Rocket VAO created, indices:", this.rocketIndexCount);
+      console.log("Rocket VAO created, indices:", this.rocketIndexCount);
     }
   }
 
@@ -1307,14 +1298,7 @@ export class PlanetRenderer {
   }
 
   private computeLightVP() {
-    // Fixed directional light that rotates WITH the planet so shadows
-    // stay anchored to objects as the planet spins.
-    //
-    // The light direction has a strong horizontal component so that
-    // shadows on the visible hemisphere (equator) stay compact and close
-    // to the objects that cast them.  A nearly-vertical light (large |Y|)
-    // would hit the equator at a grazing angle, stretching shadows across
-    // almost the entire planet radius.
+    // Compute light view/proj used for the shadow pass
     const baseLightDir: Vec3 = normalize([-0.4, -0.6, -0.7]);
 
     // Rotate baseLightDir around Y by the current planet rotation angle
@@ -1328,7 +1312,7 @@ export class PlanetRenderer {
 
     const lightPos: Vec3 = mulScalar(this.lightDir, -7.5);
     const center: Vec3 = [0, 0, 0];
-    // Standard up vector; works as long as the light isn't straight along Y
+    // Standard up vector for light view
     const up: Vec3 = [0, 1, 0];
 
     const lightView = mat4LookAt(lightPos, center, up);
@@ -1398,7 +1382,7 @@ export class PlanetRenderer {
     }
 
     this.placed = [...trees, ...snowTrees, ...boats];
-    console.log(`✓ Redistributed ${this.placed.length} objects:`, {
+    console.log(`Redistributed ${this.placed.length} objects:`, {
       trees: trees.length,
       snow_trees: snowTrees.length,
       boats: boats.length
@@ -1481,8 +1465,7 @@ export class PlanetRenderer {
       return r - (1.0 + h);
     };
 
-    // Ray march: step along the ray and detect the first sign change
-    // (above terrain → inside terrain). This is precise even at grazing angles.
+    // Ray march to detect the first surface crossing (above → inside)
     const STEPS = 48;
     const dt = (tEnd - tStart) / STEPS;
 
@@ -1538,7 +1521,7 @@ export class PlanetRenderer {
 
   placeObjectFromPick(pick: PickResult) {
     if (!pick.hit || !pick.localDir || pick.height == null) {
-      console.log("❌ Cannot place: invalid pick", pick);
+      console.log("Cannot place: invalid pick", pick);
       return;
     }
 
@@ -1576,7 +1559,7 @@ export class PlanetRenderer {
     ];
   }
 
-  // ─── Missile & Impact System ───────────────────────────────────────────
+  // Missile and impact system
 
   launchMissile(pick: PickResult) {
     if (!pick.hit || !pick.localDir || pick.height == null) return;
@@ -1677,21 +1660,11 @@ export class PlanetRenderer {
       dirtyVertices.add(vi);
     }
 
-    // Only recompute normals for vertices affected by this crater,
-    // preserving the original analytic normals for the rest of the planet.
+    // Recompute normals only for vertices affected by this crater
     this.recomputeNormalsPartial(dirtyVertices);
   }
 
-  /**
-   * Recompute normals ONLY for the given set of vertex indices.
-   * Non-dirty vertices keep their original normals (analytic finite-difference
-   * normals from sphereMesh), preventing a global shading shift when a crater
-   * is first created.
-   */
-  /**
-   * Recompute normals for affected vertices and their neighbors to ensure
-   * smooth shading transitions at crater boundaries.
-   */
+  /** Recompute normals for affected vertices and their neighbors. */
   private recomputeNormalsPartial(dirtyVerts: Set<number>) {
     if (dirtyVerts.size === 0) return;
 
@@ -1767,13 +1740,9 @@ export class PlanetRenderer {
 
   private uploadPlanetBuffers() {
     const gl = this.gl;
-    
-    // Save current VAO state to prevent corruption
+    // Save/restore VAO while updating planet buffers
     const prevVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING);
-    
-    // Unbind any active VAO before updating buffers
     gl.bindVertexArray(null);
-    
     // Update planet buffers
     gl.bindBuffer(gl.ARRAY_BUFFER, this.planetPosBuf);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.planetPositions);
@@ -1781,17 +1750,13 @@ export class PlanetRenderer {
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.planetNormals);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.planetCraterMaskBuf);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.planetCraterMask);
-    
-    // Clean up state
+    // Briefly bind planet VAO to apply updates
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
-    
-    // Force WebGL to recognize the buffer updates by briefly binding the planet VAO
     if (this.planetVao) {
       gl.bindVertexArray(this.planetVao);
       gl.bindVertexArray(null);
     }
-    
     // Restore previous VAO if any
     if (prevVao && prevVao !== this.planetVao) {
       gl.bindVertexArray(prevVao as WebGLVertexArrayObject);
@@ -2213,13 +2178,11 @@ export class PlanetRenderer {
     const gl = this.gl;
     this.computeLightVP();
 
-    // Unbind shadow texture from TEXTURE0 before binding shadow FBO to
-    // prevent a rendering feedback loop (same texture attached to FBO and
-    // bound for sampling). ANGLE on Windows may produce undefined results.
+    // Unbind shadow texture from TEXTURE0 before binding shadow FBO
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, null);
 
-    // Ensure completely clean GL state
+    // Reset GL state
     gl.bindVertexArray(null);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
@@ -2242,15 +2205,7 @@ export class PlanetRenderer {
     const uWorld = gl.getUniformLocation(this.shadowProg, "u_world");
     const uLightVP = gl.getUniformLocation(this.shadowProg, "u_lightVP");
 
-    // Planet: cull FRONT faces → renders the planet's back-face depth
-    // (the far hemisphere surface as seen from the light).  The back face
-    // depth (~0.74) is much larger than the front face depth (~0.11), so
-    // front-face fragments in the main pass always satisfy
-    //   current < back_depth → lit.
-    // Objects rendered without culling write their true depth (~0.11 minus
-    // a small lift), which is shallower than the back face.  Surface
-    // fragments behind the object then satisfy
-    //   current > obj_depth → in shadow.
+    // Shadow pass: render planet back-face depth then objects to shadow FBO
     gl.cullFace(gl.FRONT);
     gl.bindVertexArray(this.planetVao!);
     gl.uniformMatrix4fv(uWorld, false, mat4RotateY(this.rot));
@@ -2271,13 +2226,7 @@ export class PlanetRenderer {
         pos = add(pos, mulScalar(o.normal as Vec3, bob));
       }
 
-      // Lift the object slightly above the surface in the SHADOW PASS
-      // ONLY.  This creates a reliable depth gap between the object
-      // (closer to the light) and the planet surface (further from the
-      // light) so that the depth comparison in the main pass can detect
-      // the shadow even at the object's base where object depth ≈ surface
-      // depth.  The lift is invisible because the shadow pass only writes
-      // depth — not color.
+      // Lift the object slightly above the surface in the shadow pass
       const shadowLift = 0.04;
       pos = add(pos, mulScalar(o.normal as Vec3, shadowLift));
 
@@ -2313,7 +2262,7 @@ export class PlanetRenderer {
   private renderMainPass(timeS: number) {
     const gl = this.gl;
 
-    // Ensure clean state for main pass (shadow pass may leave colorMask off)
+    // Reset state for main pass
     gl.colorMask(true, true, true, true);
     gl.depthMask(true);
     gl.enable(gl.DEPTH_TEST);
@@ -2379,7 +2328,7 @@ export class PlanetRenderer {
       drawnCount++;
       if (!this.objectDrawLogged && drawnCount === 1) {
         this.objectDrawLogged = true;
-        console.log("🖌️ Drawing objects. First:", {
+        console.log("Drawing objects. First:", {
           kind: o.kind,
           scale: o.scale,
           position: o.position,
@@ -2399,7 +2348,7 @@ export class PlanetRenderer {
 
       if (o.kind === "boat") {
         isBoat = 1.0;
-        // Elevate boat above water surface to prevent sinking
+        // Bob boat and elevate above water surface
         const bob = Math.sin(timeS * 1.8 + o.phase) * 0.005;
         const floatHeight = 0.018; // Fine-tuned for realistic floating
         pos = add(pos, mulScalar(o.normal as Vec3, bob + floatHeight));
@@ -2475,21 +2424,21 @@ export class PlanetRenderer {
 
       if (o.kind === "tree") {
         if (!this.treeVao) {
-          if (drawnCount === 1) console.log("❌ Tree VAO missing!");
+          if (drawnCount === 1) console.log("Tree VAO missing!");
           return;
         }
         gl.bindVertexArray(this.treeVao);
         gl.drawElements(gl.TRIANGLES, this.treeIndexCount, gl.UNSIGNED_INT, 0);
       } else if (o.kind === "snow_tree") {
         if (!this.snowTreeVao) {
-          if (drawnCount === 1) console.log("❌ Snow Tree VAO missing!");
+          if (drawnCount === 1) console.log("Snow Tree VAO missing!");
           return;
         }
         gl.bindVertexArray(this.snowTreeVao);
         gl.drawElements(gl.TRIANGLES, this.snowTreeIndexCount, gl.UNSIGNED_INT, 0);
       } else {
         if (!this.boatVao) {
-          if (drawnCount === 1) console.log("❌ Boat VAO missing!");
+          if (drawnCount === 1) console.log("Boat VAO missing!");
           return;
         }
         gl.bindVertexArray(this.boatVao);
@@ -2500,13 +2449,12 @@ export class PlanetRenderer {
     for (const o of this.placed) drawObj(o);
 
     if (drawnCount > 0 && drawnCount !== this.placed.length) {
-      console.log("⚠️ Drew", drawnCount, "of", this.placed.length, "objects");
+      console.log("Drew", drawnCount, "of", this.placed.length, "objects");
     }
 
     gl.bindVertexArray(null);
 
-    // Unbind shadow texture so it's not bound when next frame's shadow pass
-    // binds the shadow FBO (prevents texture feedback loop)
+    // Unbind shadow texture to avoid feedback when rebinding FBO
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, null);
   }

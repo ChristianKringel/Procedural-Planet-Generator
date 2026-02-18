@@ -18,8 +18,14 @@ import { useValidatePlanetSettings } from "@/hooks/use-planet";
 import { Menu, RefreshCcw, Rocket, RotateCw, Sparkles, SunMoon, Wand2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+function makeRandomSeed() {
+  return `seed-${Math.floor(Math.random() * 10000)
+    .toString()
+    .padStart(4, "0")}-${Date.now().toString(36).slice(-4)}`;
+}
+
 const DEFAULT_SETTINGS: PlanetSettings = {
-  seed: "aurora-001",
+  seed: makeRandomSeed(),
   subdivisions: 120,
   waterThreshold: 0.0,
   noiseStrength: 1.5,
@@ -185,9 +191,7 @@ export default function PlanetStudio() {
   const onToggleRotation = () => {
     const newValue = !autoRotate;
     setAutoRotate(newValue);
-    if (rendererRef.current) {
-      rendererRef.current.setAutoRotate(newValue);
-    }
+    if (rendererRef.current) rendererRef.current.setAutoRotate(newValue);
   };
 
   const onCanvasPointerDown = (e: React.PointerEvent) => {
@@ -208,6 +212,27 @@ export default function PlanetStudio() {
         : "A tree anchored itself on the terrain.",
     });
   };
+
+  // Global key handler: P toggles the same auto-rotation used by the sidebar button
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'p' && e.key !== 'P') return;
+
+      // Use functional update to avoid stale closures. This ensures we
+      // toggle the latest `autoRotate` state and immediately sync the renderer.
+      setAutoRotate((prev) => {
+        const next = !prev;
+        const r = rendererRef.current;
+        if (r) r.setAutoRotate(next);
+        return next;
+      });
+    };
+
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // intentionally no deps beyond stable callbacks
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <>
@@ -595,8 +620,8 @@ export default function PlanetStudio() {
                   Tip: right-click the planet to place{" "}
                   <span className="text-foreground font-semibold">trees</span> on land or{" "}
                   <span className="text-foreground font-semibold">boats</span> on water.
-                  Press <span className="text-foreground font-semibold">M</span> to launch a{" "}
-                  <span className="text-foreground font-semibold">missile</span> that creates craters!
+                      Press <span className="text-foreground font-semibold">M</span> to launch a{" "}
+                      <span className="text-foreground font-semibold">missile</span> that creates craters, or press <span className="text-foreground font-semibold">P</span> to pause/resume the animation!
                 </div>
               </SidebarFooter>
             </Sidebar>
@@ -686,6 +711,7 @@ export default function PlanetStudio() {
                       >
                         Right-click: <span className="text-foreground">place objects</span> •
                         M key: <span className="text-foreground">launch missile</span> •
+                        P key: <span className="text-foreground">pause/resume</span> •
                         Regenerate: <span className="text-foreground">rebuild mesh</span>
                       </div>
                     </div>
